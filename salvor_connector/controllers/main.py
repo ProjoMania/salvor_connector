@@ -139,7 +139,8 @@ class SalvorConnectorController(http.Controller):
         if len(data) > MAX_JSON_BODY:
             raise SalvorError(422, "bad_args", "Body too large")
         if not data:
-            return {}
+            # body already consumed as a form (non-JSON content type): accept form fields
+            return {k: v for k, v in request.httprequest.form.items()}
         try:
             body = json.loads(data)
         except ValueError:
