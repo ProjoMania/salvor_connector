@@ -1,0 +1,37 @@
+<section class="oe_container">
+    <div class="oe_row oe_spaced">
+        <h2 class="oe_slogan" style="color:#0d9488;">Salvor Connector</h2>
+        <h3 class="oe_slogan">Off-site backups of this Odoo database, without sharing the master password</h3>
+    </div>
+</section>
+
+<section class="oe_container">
+    <div class="oe_row oe_spaced">
+        <div class="oe_span12">
+            <p>
+                Salvor (<a href="https://salvorcloud.com">salvorcloud.com</a>) takes scheduled, verified, off-site
+                backups of Odoo databases. This free module lets Salvor back up <b>this one database</b> even when
+                the database manager is disabled (<code>list_db = False</code>), a <code>dbfilter</code> is set,
+                or Odoo runs behind a reverse proxy.
+            </p>
+            <h4 style="color:#0d9488;">How it works</h4>
+            <ol>
+                <li>In Salvor choose <i>Add database &rarr; Connector</i>. Salvor shows a one-time pairing code.</li>
+                <li>In Odoo open <i>Settings &rarr; Technical &rarr; Salvor Connector</i> (developer mode, administrators only),
+                    paste the code and click <b>Connect</b>.</li>
+                <li>Done. Salvor can now request backups from its published IP addresses only.</li>
+            </ol>
+            <h4 style="color:#0d9488;">Security</h4>
+            <ul>
+                <li>Only a SHA-256 hash of the access token is stored; the token itself never appears in Odoo.</li>
+                <li>Every request must come from an allowed IP address and carry the token.</li>
+                <li>Backups are streamed directly; one backup at a time per database.</li>
+                <li>Restore drills are <b>off by default</b> and can only create and drop databases named
+                    <code>salvor_drill_*</code>. The live database is never restored over or dropped.</li>
+                <li>Every call is recorded in <i>Settings &rarr; Technical &rarr; Logging</i>.</li>
+                <li><b>Disconnect</b> revokes access immediately. Uninstalling removes all connector data.</li>
+            </ul>
+            <p>The only outbound connection the module makes is the single HTTPS pairing request when you click Connect.</p>
+        </div>
+    </div>
+</section>

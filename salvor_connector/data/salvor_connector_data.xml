@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <record id="salvor_connector_config_main" model="salvor.connector.config" forcecreate="1">
+        <field name="name">Salvor Connector</field>
+    </record>
+</odoo>
