@@ -14,9 +14,9 @@ import odoo
 from odoo import SUPERUSER_ID, api, fields, http, release
 from odoo.http import request, Response
 from odoo.modules.registry import Registry
-from odoo.service import db as db_service
 from odoo.tools import config
 
+from .. import dbcompat
 from ..tools import (DBNAME_RE, DRILL_RE, PROTOCOL_VERSION, DbLock, ip_allowed, sha256_hex,
                      stream_odoo_zip, stream_pg_dump)
 
@@ -25,12 +25,6 @@ _logger = logging.getLogger(__name__)
 MAX_JSON_BODY = 64 * 1024
 CONFIG_MODEL = "salvor.connector.config"
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
-
-
-def _unwrap(func):
-    # odoo.service.db gates these behind list_db (check_db_management_enabled);
-    # the connector authenticates by its own token, so call the inner function.
-    return getattr(func, "__wrapped__", func)
 
 
 class SalvorError(Exception):
@@ -77,7 +71,7 @@ class SalvorConnectorController(http.Controller):
         dbname = (request.httprequest.headers.get("X-Salvor-Db") or "").strip()
         if not dbname or not DBNAME_RE.match(dbname):
             raise SalvorError(404, "db_not_found", "Unknown database")
-        if dbname not in db_service.list_dbs(True) or not _module_installed_raw(dbname):
+        if dbname not in dbcompat.list_dbs() or not _module_installed_raw(dbname):
             raise SalvorError(404, "db_not_found", "Unknown database")
         registry = Registry(dbname)
         if CONFIG_MODEL not in registry:
@@ -197,7 +191,7 @@ class SalvorConnectorController(http.Controller):
             try:
                 if fmt == "zip":
                     with registry.cursor() as cr:
-                        manifest = _unwrap(db_service.dump_db_manifest)(cr)
+                        manifest = dbcompat.dump_manifest(cr)
                     chunks = stream_odoo_zip(dbname, manifest)
                 else:
                     chunks = stream_pg_dump(dbname)
@@ -236,7 +230,7 @@ class SalvorConnectorController(http.Controller):
             self._check_drill_name(name, dbname)
             if upload is None:
                 raise SalvorError(422, "bad_args", "Missing file")
-            if name in db_service.list_dbs(True):
+            if dbcompat.pg_db_exists(name):
                 raise SalvorError(422, "bad_args", "Drill database already exists")
             lock = DbLock(dbname)
             if not lock.acquire():
@@ -247,10 +241,10 @@ class SalvorConnectorController(http.Controller):
                 with os.fdopen(fd, "wb") as fh:
                     upload.save(fh)
                 try:
-                    _unwrap(db_service.restore_db)(name, tmp, copy=True)
+                    dbcompat.restore_drill(name, tmp)
                 except Exception as e:  # noqa: BLE001
                     _logger.warning("salvor_connector restore into %s failed: %s", name, e)
-                    if name in db_service.list_dbs(True):
+                    if dbcompat.pg_db_exists(name):  # created by this call (checked above)
                         try:
                             self._drop(name)
                         except Exception:  # noqa: BLE001
@@ -269,7 +263,7 @@ class SalvorConnectorController(http.Controller):
         def run(dbname, registry, settings):
             name = str(self._json_body().get("name") or "").strip()
             self._check_drill_name(name, dbname)
-            if name not in db_service.list_dbs(True):
+            if not dbcompat.pg_db_exists(name):
                 raise SalvorError(404, "db_not_found", "Drill database not found")
             self._drop(name)
             self._audit(dbname, "drop", 200, "dropped=%s" % name)
@@ -287,4 +281,4 @@ class SalvorConnectorController(http.Controller):
         assert DRILL_RE.match(name)
         if name == getattr(request, "db", None):
             raise SalvorError(422, "bad_args", "Refusing to drop the current database")
-        _unwrap(db_service.exp_drop)(name)
+        dbcompat.drop_drill(name)
