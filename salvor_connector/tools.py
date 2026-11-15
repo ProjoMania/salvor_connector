@@ -8,6 +8,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 import zipfile
 
 from odoo.tools import config
@@ -143,7 +144,9 @@ def stream_odoo_zip(dbname, manifest):
                 proc = subprocess.Popen(cmd, env=exec_pg_environ(), stdin=subprocess.DEVNULL,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 try:
-                    with zf.open("dump.sql", "w", force_zip64=True) as entry:
+                    info = zipfile.ZipInfo("dump.sql", date_time=time.localtime()[:6])
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with zf.open(info, "w", force_zip64=True) as entry:
                         while True:
                             chunk = proc.stdout.read(CHUNK)
                             if not chunk:
