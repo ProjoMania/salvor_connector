@@ -9,11 +9,16 @@
     <div class="oe_row oe_spaced">
         <div class="oe_span12">
             <div style="border:1px solid #dc2626;border-radius:6px;padding:10px 14px;margin-bottom:16px;">
-                <b>Running version 2.0.0 or 2.0.1? Upgrade now</b> on every database where it is installed: pull
-                your branch, <b>restart Odoo</b> (Odoo keeps running the old code until it is restarted), then
-                upgrade the module (<code>-u salvor_connector</code>, or <i>Upgrade</i> in Apps). Those versions still answer
-                restore-drill calls; from 2.0.2 on, the module refuses them and removes the scratch databases
-                they left. The pairing is kept and backups go on as before.
+                <b>Security advisory: running any version below 2.0.4? Upgrade now</b> on every database where it
+                is installed: pull your branch, <b>restart Odoo</b> (Odoo keeps running the old code until it is
+                restarted), then upgrade the module (<code>-u salvor_connector</code>, or <i>Upgrade</i> in Apps).
+                In 1.0.0, 2.0.0 and 2.0.1, <b>if Allow restore drills is ticked</b>, a caller holding the token from an
+                allowed address could have an archive run through <code>psql</code>, whose commands can run programs
+                as the Odoo service user. Until you have upgraded, <b>leave Allow restore drills off</b> (it is off by
+                default). 2.0.2 and 2.0.3 refuse every drill call; 2.0.4 removes the restore code. Salvor refuses
+                connectors below 2.0.2. The upgrade itself drops nothing: leftover scratch databases that the module
+                created go by the hourly action, the button on the settings form, Disconnect or uninstall (see
+                below). The pairing is kept and backups go on as before.
             </div>
 
             <h4 style="color:#0d9488;">What it is</h4>
@@ -60,7 +65,7 @@
             <p>With a valid token, from an allowed IP address, while the Connector is enabled:</p>
             <ul>
                 <li><b>Read basic facts</b> about this database: name, Odoo and module versions, database size,
-                    filestore size estimate, free disk in the Odoo data directory, protocol numbers and capabilities.</li>
+                    filestore size estimate, free disk in the Odoo data directory, protocol numbers and capabilities, and a restore-drill flag that is always off.</li>
                 <li><b>Start, poll, download and delete a backup of this database</b>: a PostgreSQL custom-format dump,
                     or a standard Odoo backup zip (<code>dump.sql</code>, <code>filestore/</code>,
                     <code>manifest.json</code>). One backup at a time, at most two stored.</li>
@@ -82,7 +87,9 @@
                 <li>Back up a database it was not paired with, call from an address not on the allow list (an empty
                     list refuses everyone), or work while the Connector is disabled or disconnected.</li>
                 <li>Change the module's settings, write to your data or run code on the server.</li>
-                <li>Start a restore drill: every drill call is answered with <code>410</code>, whatever is stored.</li>
+                <li>Start a restore drill: the restore code was removed in 2.0.4. Drill calls get <code>410</code> (an
+                    upload with more than 1 KiB gets <code>413</code> from Odoo; a caller without a valid token is
+                    refused like any other).</li>
             </ul>
 
             <h4 style="color:#0d9488;">Works on hardened servers</h4>
@@ -108,14 +115,17 @@
                     and exists until Salvor has downloaded it (normally minutes); if never collected, the hourly
                     action deletes it, up to about 7 hours after the start.</li>
                 <li>The <b>Pull Log</b> (<i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>, administrators only)
-                    records calls and refusals; successful status polls are not logged one by one. Kept 90 days;
+                    records Salvor's calls and most refusals: successful status polls are not logged one by one, and
+                    a refusal for a database the worker has not loaded, or one over the per-minute limit, goes to the
+                    Odoo server log only. Kept 90 days;
                     refusals 14 days, at most 30 rows a minute, and evicted first at the 200,000-row cap.</li>
             </ul>
 
             <h4 style="color:#0d9488;">How to revoke access</h4>
             <ul>
                 <li><b>Disconnect</b>: the token hash and the allow list are cleared, a running backup is stopped and
-                    its file deleted, leftover drill databases are dropped.</li>
+                    its file deleted, leftover drill databases are dropped (one busy at that moment is left to the
+                    hourly action).</li>
                 <li>Untick <b>Enabled</b>, or empty <b>Allowed IPs</b>: every call is refused.</li>
                 <li>In Salvor: <i>Revoke access</i> or <i>Rotate token</i>.</li>
                 <li><b>Uninstall</b>: stops the module's jobs, deletes its files and drops the drill databases it
@@ -129,8 +139,9 @@
             <p>
                 A scratch database (<code>salvor_drill_...</code>) that a drill under 2.0.0 or 2.0.1 left behind is a
                 full copy of production, logins included. While one exists, the settings form shows a warning with a
-                <b>Drop them now</b> button. The hourly action drops it after 24 hours (6 if its upload or restore
-                never finished, or a restore was left running), and Disconnect drops it too. The module removes only databases it created and still
+                <b>Drop them now</b> button. Where Odoo's scheduled actions run for the database, the hourly
+                action drops it 24 hours after its record was created (6 if its upload or restore never finished, or
+                a restore was left running), and Disconnect drops it too. The module removes only databases it created and still
                 has on record; check for others by hand.
             </p>
 
@@ -141,7 +152,7 @@
                 <li><code>pg_dump</code> on the Odoo server, same or newer major version than PostgreSQL.</li>
                 <li>Odoo reachable over HTTPS from Salvor, with <code>web.base.url</code> set to its public
                     <code>https://</code> address. On Odoo 17 and 18 the URL must lead to exactly one database.</li>
-                <li>The database owned by the PostgreSQL role Odoo uses.</li>
+                <li>The database owned by the PostgreSQL role Odoo uses (or named in <code>db_name</code>).</li>
                 <li>Free disk in the Odoo data directory: database size (+ filestore for the zip format) + 256 MiB.</li>
                 <li>Each download piece is a normal Odoo request bound by <code>limit_time_real</code>; on a link slower
                     than about 2 MiB/s, raise it.</li>

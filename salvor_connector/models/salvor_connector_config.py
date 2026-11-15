@@ -29,9 +29,9 @@ class SalvorConnectorConfig(models.Model):
         help="Salvor source addresses or CIDR ranges, comma or newline separated. "
              "Requests from any other address are refused (empty = refuse all).")
     drill_enabled = fields.Boolean(
-        string="Allow restore drills (disabled)", default=False, readonly=True,
-        help="Kept for data compatibility only: restore drills through the connector are disabled "
-             "since 2.0.2. Salvor checks each archive's integrity (sha256); restore drills need a "
+        string="Allow restore drills (removed)", default=False, readonly=True,
+        help="Kept for data compatibility only: restore drills were removed from the connector "
+             "in 2.0.4 (disabled since 2.0.2). Salvor checks each archive's integrity (sha256); restore drills need a "
              "master-password or SSH connection.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)

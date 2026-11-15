@@ -96,24 +96,34 @@ class TestSalvorConnector(HttpCase):
     def _owned_drill(self, name):
         """A drill db as 2.0.0/2.0.1 left it: created by the connector, recorded with its oid."""
         self._force_drop(name)
-        oid = tools.create_drill_db(name)
+        subprocess.run([find_pg_tool("createdb"), name], env=exec_pg_environ(), check=True)
+        oid = tools.db_oid(name)
         self.env["salvor.connector.drill"].sudo().create({"name": name, "state": "restored", "pg_oid": oid})
         self.env.flush_all()
         return oid
 
     def test_drill_endpoints_disabled(self):
-        """2.0.2: every drill endpoint answers 410, whatever the stored switch says."""
+        """2.0.4: the restore code is gone; every drill route is a 410 stub that
+        touches neither the disk nor PostgreSQL, with or without a token."""
+        from .. import jobrunner
+        self.assertFalse(hasattr(jobrunner, "run_restore") or hasattr(jobrunner, "PsqlGuard"))
+        drills_root = os.path.join(tools.config["data_dir"], "salvor_connector", "drills", self.dbname)
+        before = os.path.exists(drills_root)
         for enabled in (False, True):
             self.cfg.drill_enabled = enabled
             for ep, body in (("drill/start", {"name": "salvor_drill_a", "size": 10}),
                              ("drill/restore", {"name": "salvor_drill_a", "sha256": "0" * 64}),
                              ("drill/status", {"name": "salvor_drill_a"})):
-                self._assert_error(self._post(ep, json=body), 410, "drills_disabled")
-            self._assert_error(self._upload("salvor_drill_a", 0, b"x", expect=410), 410, "drills_disabled")
-            self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "drills_disabled")
+                self._assert_error(self._post(ep, json=body), 410, "drills_removed")
+                self._assert_error(self._post(ep, json=body, token=None), 410, "drills_removed")
+            self._assert_error(self._upload("salvor_drill_a", 0, b"x", expect=410), 410, "drills_removed")
+            self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "drills_removed")
         self.assertFalse(dbcompat.pg_db_exists("salvor_drill_a"))
+        self.assertEqual(os.path.exists(drills_root), before)
+        self.assertFalse(self.env["salvor.connector.drill"].search([("name", "=", "salvor_drill_a")]))
         info = self._post("info").json()
         self.assertFalse(info["drill_enabled"])
+        self.assertNotIn("upload_chunk_max", info)
         self.assertFalse([c for c in info["capabilities"] if c.startswith("drill_") and c != "drill_cleanup"])
         self.cfg._force_drills_off()
         self.assertFalse(self.cfg.drill_enabled)
@@ -344,7 +354,7 @@ class TestSalvorConnector(HttpCase):
 
     def test_revoked_and_wrong_db_token(self):
         self.cfg.action_disconnect()
-        for ep in ("info", "backup/start", "backup/status", "drill/start", "drop"):
+        for ep in ("info", "backup/start", "backup/status", "drop"):
             self._assert_error(self._post(ep, json={}), 401, "unauthorized")
         self.cfg.token_hash = sha256_hex("another-db-token-" + "x" * 40)
         for ep in ("info", "backup/start", "drop"):
@@ -444,84 +454,6 @@ class TestSalvorConnector(HttpCase):
         finally:
             proc.kill()
             proc.wait()
-
-    def test_restore_preamble_filter(self):
-        from .. import jobrunner
-        drop = {b"transaction_timeout"}
-        self.assertEqual(jobrunner.unsupported_settings(160004), drop)
-        self.assertEqual(jobrunner.unsupported_settings(170000), set())
-        sql = (b"--\n-- PostgreSQL database dump\n--\n\n\\restrict abc\n"
-               b"SET statement_timeout = 0;\nSET transaction_timeout = 0;\n"
-               b"SELECT pg_catalog.set_config('search_path', '', false);\n\n"
-               b"CREATE TABLE public.salvor_ut_t (x text);\n"
-               b"COPY public.salvor_ut_t (x) FROM stdin;\nSET transaction_timeout = 0;\n\\.\n")
-        for size in (1, 7, 64, len(sql)):  # any chunking gives the same result
-            out = b"".join(jobrunner.filter_preamble(
-                iter([sql[i:i + size] for i in range(0, len(sql), size)]), drop))
-            self.assertEqual(out, sql.replace(b"SET transaction_timeout = 0;\nSELECT", b"SELECT"))
-        self.assertEqual(b"".join(jobrunner.filter_preamble(iter([sql]), set())), sql)
-        # the COPY data row that looks like the setting survives a real restore
-        name = drill_name("ut_pre")
-        self.addCleanup(self._force_drop, name)
-        tools.create_drill_db(name)
-        out = b"".join(jobrunner.filter_preamble(iter([sql]), drop)).replace(b"\\restrict abc\n", b"")
-        subprocess.run([find_pg_tool("psql"), "-q", "-X", "-1", "-v", "ON_ERROR_STOP=1", "--dbname=" + name],
-                       input=out, env=exec_pg_environ(), check=True, capture_output=True)
-        with closing(psycopg2.connect(dbname=name, **self._pg_kwargs())) as cnx, cnx.cursor() as cr:
-            cr.execute("SELECT x FROM public.salvor_ut_t")
-            self.assertEqual(cr.fetchall(), [("SET transaction_timeout = 0;",)])
-
-    # --- psql meta-command guard (2.0.1) ------------------------------------
-    def _guard(self, sql, size=None):
-        from .. import jobrunner
-        size = size or len(sql) or 1
-        chunks = iter([sql[i:i + size] for i in range(0, len(sql), size)])
-        return b"".join(jobrunner.PsqlGuard().feed(chunks))
-
-    def test_psql_guard_refuses_meta_commands(self):
-        from .. import jobrunner
-        refused = [
-            b"\\! touch /tmp/x\n",
-            b"SELECT 1; \\! touch /tmp/x\n",
-            b"\\c postgres\n",
-            b"\\connect postgres\n",
-            b"\\o /tmp/out\n",
-            b"\\copy (SELECT 1) TO PROGRAM 'touch /tmp/x'\n",
-            b"\\set ON_ERROR_STOP 0\n",
-            b"\\ir /etc/passwd\n",
-            b"CREATE TABLE t (x text);\nCOPY public.t (x) FROM stdin;\na\\tb\n\\.\n\\! touch /tmp/x\n",
-            b"SELECT 'a\\'; \n",  # backslash-quote: where the literal ends depends on std_strings
-            b"SELECT 'a\\'' \\! touch /tmp/x '; \n",
-            b"SELECT E'a\\\\\\'' \\! touch /tmp/x '; \n",
-            b"SELECT 1$q$ x $q$ \\! touch /tmp/x $q$;\n",  # number then dollar quote
-            b"COPY public.t (x) FROM stdin; \\! touch /tmp/x\n",
-            b"COPY (SELECT a FROM stdin) TO STDOUT;\n\\! touch /tmp/x\n",
-            b"COPY public.t TO PROGRAM 'touch /tmp/x';\n",
-            b"\\restrict abc\n\\restrict def\n",
-            b"\\restrict abc\nSELECT 1;\n\\unrestrict xyz\n",
-            b"SELECT 'unterminated\n",
-            b"COPY public.t (x) FROM stdin;\nrow\n",  # ends inside COPY data
-            b"SELECT 1",  # ends inside a statement: the tail would be glued to it
-            b"SELECT 1; -- comment\r\\! touch /tmp/x\n",  # psql ends a -- comment at CR
-            b"SELECT 1; \x00\\! touch /tmp/x\n",
-            b"COPY/**/public.t (x) FROM stdin; \\! touch /tmp/x\n",
-            b"COPY/**/public.t (x) FROM stdin;\nrow\n",
-        ]
-        for sql in refused:
-            for size in (1, 5, None):  # meta-commands split across chunk boundaries
-                with self.assertRaises(jobrunner.UnsafeArchive, msg=sql):
-                    self._guard(sql, size)
-
-    def test_psql_guard_passes_pg_dump_output(self):
-        sql = (b"--\n-- PostgreSQL database dump\n--\n\n\\restrict Abc123\n\n"
-               b"SET standard_conforming_strings = on;\n"
-               b"CREATE FUNCTION public.f() RETURNS text LANGUAGE sql AS $_$ SELECT '\\! no' $_$;\n"
-               b"CREATE TABLE public.\"we\"\"ird\\\" (x text DEFAULT 'a\\b\\\\x');\n"
-               b"COPY public.\"we\"\"ird\\\" (x) FROM stdin;\n\\! data, not a command\na\\tb\\N\n\\.\n"
-               b"/* nested /* comment \\! */ still */ SELECT 1; -- \\! comment\n"
-               b"ALTER TABLE t ADD CHECK (name LIKE 'x\\_%');\n\n\\unrestrict Abc123\n")
-        for size in (1, 3, 64, None):
-            self.assertEqual(self._guard(sql, size), sql)
 
     def test_drill_drop_button_and_stale_gc(self):
         self.cfg.drill_enabled = True
