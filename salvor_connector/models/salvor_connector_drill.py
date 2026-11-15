@@ -80,7 +80,7 @@ class SalvorConnectorDrill(models.Model):
         """Drill databases older than salvor_connector.drill_ttl_hours (default 24)
         are dropped: Salvor drops its drill right after checking it, so one this
         old was orphaned (Disconnect mid-drill, Salvor unreachable). A drill whose
-        upload or restore never finished is dropped, with its uploaded archive,
+        upload or restore never finished (created, uploading, restoring, failed) is dropped, with its uploaded archive,
         after the backup job TTL (6 h), like a backup file."""
         try:
             ttl = int(self.env["ir.config_parameter"].sudo().get_param(
@@ -90,7 +90,7 @@ class SalvorConnectorDrill(models.Model):
         cutoff = fields.Datetime.now() - timedelta(hours=max(ttl, 1))
         unfinished = fields.Datetime.now() - timedelta(hours=max(job_ttl_hours, 1))
         stale = self.sudo().search([("state", "!=", "dropped"), "|", ("create_date", "<", cutoff),
-                                    "&", ("state", "in", ("created", "uploading", "failed")),
+                                    "&", ("state", "in", ("created", "uploading", "restoring", "failed")),
                                     ("create_date", "<", unfinished)])
         for rec in stale:
             try:
