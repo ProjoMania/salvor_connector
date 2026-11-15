@@ -23,6 +23,7 @@ Job kinds:
                 database.uuid/secret, and record what is still active.
 """
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -89,6 +90,15 @@ def _env(spec):
     env = dict(os.environ)
     env.update(spec.get("pg_env") or {})
     return env
+
+
+def psql_env(env, home):
+    """Only what libpq needs: no PSQLRC / PAGER / PSQL_EDITOR / PGOPTIONS from
+    the Odoo service environment reaches the psql that reads the archive."""
+    keep = {k: v for k, v in env.items() if k.startswith("PG") and k not in ("PGOPTIONS",)}
+    keep.update(PATH="/usr/local/bin:/usr/bin:/bin", HOME=home, LC_ALL="C",
+                PSQLRC=os.devnull, PSQL_HISTORY=os.devnull)
+    return keep
 
 
 def run_backup(job):
@@ -264,7 +274,7 @@ def _is_preamble(line):
 
 
 def filter_preamble(chunks, drop):
-    """Drop `SET <name> = ...;` lines for settings the target server does not
+    r"""Drop `SET <name> = ...;` lines for settings the target server does not
     know — only in pg_dump's leading preamble (SET / set_config / \restrict /
     comments / blank lines). Filtering stops at the first other line and
     everything after it (DDL, COPY data) passes through byte for byte, so
@@ -298,6 +308,180 @@ def filter_preamble(chunks, drop):
         yield buf
 
 
+class UnsafeArchive(RuntimeError):
+    pass
+
+
+_IDENT = frozenset(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+_DOLLAR_RE = re.compile(rb"\$([A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$")
+_RESTRICT_RE = re.compile(rb"\\(restrict|unrestrict) ([A-Za-z0-9]{1,128})\r?\n?\Z")
+# the only COPY form pg_dump / pg_restore write; any other COPY is refused
+_COPY_IN_RE = re.compile(rb"\s*COPY\s+[\w.\"$\x80-\xff]+(\s*\([^()]*\))?\s+FROM\s+stdin\s*\Z", re.I)
+_COPY_RE = re.compile(rb"\s*COPY\b", re.I)
+
+
+class PsqlGuard:
+    r"""Line-based gate in front of psql. psql runs backslash meta-commands
+    (\! shell, \c, \o, \copy ... program, \set ON_ERROR_STOP) found anywhere in
+    its input outside quotes and COPY data; a pg_dump archive never contains
+    one, so any such line aborts the restore before psql sees it.
+
+    The lexer tracks what psql tracks: '...' literals (a backslash right
+    before a quote is refused there: it is the only place where E'' escapes
+    or standard_conforming_strings, which the archive's SQL could switch,
+    change where a literal ends, so every reading agrees), "...",
+    $tag$...$tag$ (refused when glued to a preceding word or number),
+    -- and nested /* */ comments, and
+    COPY ... FROM stdin data up to the `\.` line. Allowed outside those: one
+    `\restrict KEY` line and `\unrestrict` with the same key (pg_dump's own
+    guard, which psql then enforces too). Unknown or unbalanced state at the
+    end of the stream is refused, so nothing appended after it (the
+    neutralization tail) can be swallowed into a string or COPY block."""
+
+    MAX_LINE = 1024 * 1024 * 1024
+
+    def __init__(self):
+        self.mode = "sql"  # sql | sq | dq | dollar | block | copy
+        self.tag = b""
+        self.depth = 0
+        self.stmt = bytearray()
+        self.restrict_key = None
+        self.restrict_used = False
+        self.line_no = 0
+
+    def _refuse(self, why):
+        raise UnsafeArchive("unsafe archive: %s (line %d)" % (why, self.line_no))
+
+    def feed(self, chunks):
+        buf = b""
+        for chunk in chunks:
+            buf += chunk
+            out = []
+            start = 0
+            while True:
+                nl = buf.find(b"\n", start)
+                if nl < 0:
+                    break
+                line = buf[start:nl + 1]
+                self.check_line(line)
+                out.append(line)
+                start = nl + 1
+            buf = buf[start:]
+            if len(buf) > self.MAX_LINE:
+                self._refuse("line too long")
+            if out:
+                yield b"".join(out)
+        if buf:
+            self.check_line(buf)
+            yield buf
+        self.finish()
+
+    def finish(self):
+        if self.mode != "sql":
+            self._refuse("archive ends inside %s" % self.mode)
+        if bytes(self.stmt).strip():
+            self._refuse("archive ends inside a statement")
+
+    def check_line(self, line):
+        self.line_no += 1
+        if self.mode == "copy":
+            if line in (b"\\.\n", b"\\.\r\n", b"\\."):
+                self.mode = "sql"
+            return
+        if self.mode == "sql" and not bytes(self.stmt).strip() and line.startswith(b"\\"):
+            m = _RESTRICT_RE.match(line)
+            if m and m.group(1) == b"restrict" and not self.restrict_used:
+                self.restrict_used, self.restrict_key = True, m.group(2)
+                return
+            if m and m.group(1) == b"unrestrict" and self.restrict_key == m.group(2):
+                self.restrict_key = None
+                return
+            self._refuse("psql meta-command")
+        i, n = 0, len(line)
+        while i < n:
+            c = line[i]
+            mode = self.mode
+            if mode == "sql":
+                if c == 0x5C:  # backslash
+                    self._refuse("psql meta-command")
+                if c == 0x2D and line[i + 1:i + 2] == b"-":  # -- comment to end of line
+                    break
+                if c == 0x2F and line[i + 1:i + 2] == b"*":
+                    self.mode, self.depth = "block", 1
+                    i += 2
+                    continue
+                prev = line[i - 1] if i else 0x20
+                ident_before = prev in _IDENT or prev >= 0x80
+                if c == 0x27:  # ' (plain, E'', U&'', B'', X'' alike: see sq below)
+                    self.mode = "sq"
+                    self.stmt += b"'s'"
+                elif c == 0x22:
+                    self.mode = "dq"
+                    self.stmt += b'"i"'
+                elif c == 0x24:
+                    m = _DOLLAR_RE.match(line, i)
+                    if m and ident_before:
+                        # `x$a$` is an identifier, `1$a$` a number then a dollar quote:
+                        # psql's reading depends on the token, so refuse the ambiguity
+                        self._refuse("ambiguous dollar quote")
+                    if m:
+                        self.mode, self.tag = "dollar", m.group(0)
+                        self.stmt += b"$d$"
+                        i = m.end()
+                        continue
+                    self.stmt.append(c)
+                elif c == 0x3B:  # ;
+                    self._end_statement(line[i + 1:])
+                else:
+                    self.stmt.append(c)
+                i += 1
+            elif mode == "sq":
+                if c == 0x5C and line[i + 1:i + 2] == b"'":
+                    # the one sequence whose reading depends on standard_conforming_strings
+                    self._refuse("backslash before a quote in a plain string literal")
+                if c == 0x27:
+                    if line[i + 1:i + 2] == b"'":
+                        i += 2
+                        continue
+                    self.mode = "sql"
+                i += 1
+            elif mode == "dq":
+                if c == 0x22:
+                    if line[i + 1:i + 2] == b'"':
+                        i += 2
+                        continue
+                    self.mode = "sql"
+                i += 1
+            elif mode == "dollar":
+                end = line.find(self.tag, i)
+                if end < 0:
+                    break
+                self.mode = "sql"
+                i = end + len(self.tag)
+            else:  # block comment
+                if c == 0x2F and line[i + 1:i + 2] == b"*":
+                    self.depth += 1
+                    i += 2
+                    continue
+                if c == 0x2A and line[i + 1:i + 2] == b"/":
+                    self.depth -= 1
+                    i += 2
+                    if not self.depth:
+                        self.mode = "sql"
+                    continue
+                i += 1
+
+    def _end_statement(self, rest):
+        stmt = bytes(self.stmt)
+        self.stmt = bytearray()
+        if _COPY_RE.match(stmt):
+            if not _COPY_IN_RE.match(stmt):
+                self._refuse("COPY statement not written by pg_dump")
+            if rest.strip():
+                self._refuse("text after COPY ... FROM stdin")
+            self.mode = "copy"
+
+
 def run_restore(job):
     spec = job.spec
     target = spec["target"]
@@ -328,7 +512,7 @@ def run_restore(job):
         psql_err = open(os.path.join(tmp, "psql.err"), "w+b")
         src_err = open(os.path.join(tmp, "src.err"), "w+b")
         psql = subprocess.Popen([spec["psql"], "-q", "-X", "-1", "-v", "ON_ERROR_STOP=1",
-                                 "--dbname=" + target], env=env, stdin=subprocess.PIPE,
+                                 "--dbname=" + target], env=psql_env(env, tmp), stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=psql_err)
         src = None
         try:
@@ -341,7 +525,9 @@ def run_restore(job):
             drop = unsupported_settings(server_version_num(spec, target))
             try:
                 with feed:
-                    for chunk in filter_preamble(iter(lambda: feed.read(CHUNK), b""), drop):
+                    guard = PsqlGuard()
+                    raw = iter(lambda: feed.read(CHUNK), b"")
+                    for chunk in guard.feed(filter_preamble(raw, drop)):
                         psql.stdin.write(chunk)
                 psql.stdin.write(b"\n")
                 psql.stdin.write(neutralize_tail(spec))
