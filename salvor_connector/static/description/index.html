@@ -29,16 +29,9 @@
                     the Odoo user, downloaded by Salvor in resumable parts, and deleted right after (if never collected, up to about 7 hours later). The file is not
                     encrypted while it exists;
                     one backup at a time per database.</li>
-                <li>Restore drills are <b>off by default</b>. Turn them on only if you trust Salvor with this level
-                    of access: with the switch on, a caller holding the token from an allowed IP address can have an
-                    archive it sends restored into a new database named <code>salvor_drill_*</code> (never an existing
-                    name). The archive's SQL runs with the Odoo database account's rights, the same account that owns
-                    the live database; psql's own commands (shell, connect, file output) are refused before they run.
-                    The copy is neutralized (crons and outgoing mail off, pairing cleared) in the same transaction,
-                    holds production's data and logins while it exists, and is dropped by Salvor after the check,
-                    after 24 hours, on Disconnect, or with the Drop button. The connector never restores over or drops
-                    the live database, and drops only drill databases this database created. Drills need the CREATEDB
-                    privilege and free disk of 2.5&times; the backup size.</li>
+                <li><b>Restore drills through the connector are disabled in this version</b>; Salvor verifies
+                    backups on its own side. Drill databases left by earlier versions are dropped after 24 hours,
+                    on Disconnect, or with the Drop button.</li>
                 <li>Calls from Salvor (status polls excepted) are listed in <i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>
                     (kept 90 days; refused calls are rate-limited to 30 rows per minute and kept 14 days).</li>
                 <li><b>Disconnect</b> revokes access immediately. Uninstalling removes all connector data.</li>

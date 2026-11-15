@@ -29,16 +29,9 @@ class SalvorConnectorConfig(models.Model):
         help="Salvor source addresses or CIDR ranges, comma or newline separated. "
              "Requests from any other address are refused (empty = refuse all).")
     drill_enabled = fields.Boolean(
-        string="Allow restore drills", default=False,
-        help="Trust level: with this on, whoever holds Salvor's token and calls from an allowed IP "
-             "can have an archive THEY send restored into a NEW database named salvor_drill_* on this "
-             "PostgreSQL server. The archive's SQL runs with the Odoo database account's rights "
-             "(the same role that owns the live database); only psql's own commands (shell, "
-             "connect, file output) are refused. The copy is neutralized (crons and outgoing mail "
-             "off, pairing cleared) in the same transaction, holds production's data and logins "
-             "until it is dropped, and is dropped by Salvor after the check, after 24 hours, on "
-             "Disconnect or with the Drop button. The connector never restores over or drops the "
-             "live database. Needs the CREATEDB privilege and free disk of 2.5x the backup size.")
+        string="Allow restore drills (disabled)", default=False, readonly=True,
+        help="Kept for data compatibility only: restore drills through the connector are disabled "
+             "in this version; Salvor verifies backups on its own side.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -167,6 +160,10 @@ class SalvorConnectorConfig(models.Model):
             _logger.info("salvor_connector: removed %s expired backup job(s)", removed)
         self.env["salvor.connector.log"]._gc_old_rows()
         self.env["salvor.connector.drill"]._gc_stale(self._job_ttl_hours())
+
+    @api.model
+    def _force_drills_off(self):
+        self.sudo().search([("drill_enabled", "=", True)]).write({"drill_enabled": False})
 
     def action_drop_drills(self):
         """Drop leftover drill databases this database created (oid-checked)."""

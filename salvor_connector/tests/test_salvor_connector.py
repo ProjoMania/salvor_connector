@@ -93,17 +93,36 @@ class TestSalvorConnector(HttpCase):
         bodies.add(resp.text)
         self.assertEqual(len(bodies), 1, bodies)
 
+    def _owned_drill(self, name):
+        """A drill db as 2.0.0/2.0.1 left it: created by the connector, recorded with its oid."""
+        self._force_drop(name)
+        oid = tools.create_drill_db(name)
+        self.env["salvor.connector.drill"].sudo().create({"name": name, "state": "restored", "pg_oid": oid})
+        self.env.flush_all()
+        return oid
+
+    def test_drill_endpoints_disabled(self):
+        """2.0.2: every drill endpoint answers 410, whatever the stored switch says."""
+        for enabled in (False, True):
+            self.cfg.drill_enabled = enabled
+            for ep, body in (("drill/start", {"name": "salvor_drill_a", "size": 10}),
+                             ("drill/restore", {"name": "salvor_drill_a", "sha256": "0" * 64}),
+                             ("drill/status", {"name": "salvor_drill_a"})):
+                self._assert_error(self._post(ep, json=body), 410, "drills_disabled")
+            self._assert_error(self._upload("salvor_drill_a", 0, b"x", expect=410), 410, "drills_disabled")
+            self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "drills_disabled")
+        self.assertFalse(dbcompat.pg_db_exists("salvor_drill_a"))
+        info = self._post("info").json()
+        self.assertFalse(info["drill_enabled"])
+        self.assertFalse([c for c in info["capabilities"] if c.startswith("drill_") and c != "drill_cleanup"])
+        self.cfg._force_drills_off()
+        self.assertFalse(self.cfg.drill_enabled)
+
     def test_bad_drill_name(self):
-        # drills disabled (default): restore and drop refused with 403
-        self._assert_error(self._post("drop", json={"name": "salvor_drill_x"}), 403, "drill_disabled")
-        self.cfg.drill_enabled = True
         self._assert_error(self._post("drop", json={"name": "salvor_drill_x"}), 404, "db_not_found")
         for bad in ("prod", self.dbname, "salvor_drill_", "salvor_drill_X", "salvor_drill_a;drop",
                     "salvor_drill_../a", "salvor_drill_" + "a" * 41):
             self._assert_error(self._post("drop", json={"name": bad}), 422, "bad_args")
-        for enabled in (False, True):  # the v1 restore route is gone (2.0.1)
-            self.cfg.drill_enabled = enabled
-            self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "gone")
 
     def test_bad_format(self):
         self._assert_error(self._post("backup", json={"format": "tar"}), 422, "bad_args")
@@ -277,105 +296,30 @@ class TestSalvorConnector(HttpCase):
         if dbcompat.pg_db_exists(name):
             dbcompat.drop_drill(name)
 
-    def test_drill_v2_roundtrip_neutralized(self):
-        self.cfg.drill_enabled = True
-        job_id, st = self._run_job("dump")
-        archive = self._post("backup/download", json={"job_id": job_id}).content
-        name = drill_name("ut_v2")
-        self._force_drop(name)
-        self.addCleanup(self._force_drop, name)
-        resp = self._post("drill/start", json={"name": name, "size": len(archive)})
-        self.assertEqual(resp.status_code, 201, resp.text[:300])
-        self.assertTrue(self._drill_db_exists(name))
-        # a second claim of the same name is a conflict, never a second owner
-        self._assert_error(self._post("drill/start", json={"name": name, "size": 10}), 409, "drill_exists")
-        half = len(archive) // 2
-        self._upload(name, 0, archive[:half])
-        self._upload(name, 0, archive[:half])  # a retried chunk replaces itself
-        resp = self._upload(name, half + 10, archive[half + 10:half + 20], expect=409)
-        self.assertEqual(resp.json()["error"], "offset_mismatch")
-        self._upload(name, half, archive[half:])
-        bad = self._post("drill/restore", json={"name": name, "sha256": "0" * 64})
-        self._assert_error(bad, 422, "sha256_mismatch")
-        resp = self._post("drill/restore", json={"name": name, "sha256": hashlib.sha256(archive).hexdigest()})
-        self.assertEqual(resp.status_code, 202, resp.text[:300])
-        deadline = time.time() + 240
-        while True:
-            ds = self._post("drill/status", json={"name": name}).json()
-            if ds["state"] in ("done", "failed") or time.time() > deadline:
-                break
-            time.sleep(0.5)
-        self.assertEqual(ds["state"], "done", ds)
-        self.assertEqual(ds["neutralization"]["active_crons"], 0)
-        self.assertEqual(ds["neutralization"]["active_mail_servers"], 0)
-        self.assertTrue(ds["neutralization"]["is_neutralized_flag"])
-        self.assertEqual(ds["neutralization"]["pairing_left"], 0)
-        with closing(psycopg2.connect(dbname=name, **self._pg_kwargs())) as cnx, cnx.cursor() as cr:
-            cr.execute("SELECT count(*) FROM ir_cron c WHERE active AND id NOT IN (SELECT res_id FROM ir_model_data "
-                       "WHERE model='ir.cron' AND module='base' AND name='autovacuum_job')")
-            self.assertEqual(cr.fetchone()[0], 0)
-            cr.execute("SELECT value FROM ir_config_parameter WHERE key='database.uuid'")
-            drill_uuid = cr.fetchone()[0]
-        live_uuid = self.env["ir.config_parameter"].sudo().get_str("database.uuid")
-        self.assertNotEqual(drill_uuid, live_uuid)
-        self.env.invalidate_all()
-        rec = self.env["salvor.connector.drill"].search([("name", "=", name)])
-        self.assertEqual(rec.state, "restored")
-        resp = self._post("drop", json={"name": name})
-        self.assertEqual(resp.status_code, 200, resp.text[:300])
-        self.assertFalse(self._drill_db_exists(name))
-        self.env.invalidate_all()
-        self.assertEqual(rec.state, "dropped")
-        # dropped is final: a second drop is refused like an unknown name
-        self._assert_error(self._post("drop", json={"name": name}), 404, "db_not_found")
-
     def _v1_restore(self, name, archive):
         return self.opener.post(self.base_url() + "/salvor/v1/restore",
                                 headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN},
                                 data={"name": name}, files={"backup_file": ("x.dump", archive)}, timeout=60)
 
-    def test_v1_restore_route_removed(self):
-        self.cfg.drill_enabled = True
-        name = drill_name("ut_v1")
-        self._assert_error(self._v1_restore(name, b"PGDMP"), 410, "gone")
-        self.assertFalse(self._drill_db_exists(name))
-        self._assert_error(self._v1_restore(name, b"PGDMP"), 410, "gone")
-
-    def test_drill_disk_precheck(self):
-        self.cfg.drill_enabled = True
-        with patch.object(tools, "disk_free", return_value=2 * 1024 ** 3):
-            resp = self._post("drill/start", json={"name": drill_name("ut_disk"), "size": 1024 ** 3})
-            self._assert_error(resp, 507, "insufficient_disk")
-        self.assertFalse(self._drill_db_exists(drill_name("ut_disk")))
-
     # --- scope proof ----------------------------------------------------------
     def test_scope_foreign_and_non_drill_dbs(self):
-        """The backup token can't create/restore/drop anything but its OWN drills."""
-        self.cfg.drill_enabled = True
+        """drop removes only drill dbs THIS database's connector created."""
         foreign = drill_name("ut_foreign")  # e.g. another paired database's drill
         if not dbcompat.pg_db_exists(foreign):
             subprocess.run([find_pg_tool("createdb"), foreign], env=exec_pg_environ(), check=True)
         self.addCleanup(self._force_drop, foreign)
         self._assert_error(self._post("drop", json={"name": foreign}), 404, "db_not_found")
-        self._assert_error(self._post("drill/status", json={"name": foreign}), 404, "db_not_found")
-        self._assert_error(self._upload(foreign, 0, b"x", expect=404), 404, "db_not_found")
-        self._assert_error(self._post("drill/restore", json={"name": foreign, "sha256": "0" * 64}),
-                           404, "db_not_found")
-        # claiming an existing name is a conflict: it never becomes ours
-        self._assert_error(self._post("drill/start", json={"name": foreign, "size": 10}), 409, "drill_exists")
-        self._assert_error(self._post("drop", json={"name": foreign}), 404, "db_not_found")
         self.assertTrue(dbcompat.pg_db_exists(foreign))
-        # non-drill names: the live db, system dbs, anything else
         for bad in (self.dbname, "postgres", "template1", "prod", "salvor_drill_A"):
             self._assert_error(self._post("drop", json={"name": bad}), 422, "bad_args")
-            self._assert_error(self._post("drill/start", json={"name": bad, "size": 10}), 422, "bad_args")
-            self._assert_error(self._v1_restore(bad, b"PGDMP"), 410, "gone")
-        # there is no listing endpoint, and info names only this database
+        own = drill_name("ut_own")
+        self.addCleanup(self._force_drop, own)
+        self._owned_drill(own)
+        self.assertEqual(self._post("drop", json={"name": own}).status_code, 200)
+        self.assertFalse(dbcompat.pg_db_exists(own))
         for path in ("list", "db/list", "databases"):
-            resp = self._post(path)
-            self.assertEqual(resp.status_code, 404)
-        info = self._post("info").json()
-        self.assertNotIn(foreign, str(info))
+            self.assertEqual(self._post(path).status_code, 404)
+        self.assertNotIn(foreign, str(self._post("info").json()))
 
     def test_revoked_and_wrong_db_token(self):
         self.cfg.action_disconnect()
@@ -447,7 +391,7 @@ class TestSalvorConnector(HttpCase):
         self.cfg.drill_enabled = True
         name = drill_name("ut_oid")
         self.addCleanup(self._force_drop, name)
-        self.assertEqual(self._post("drill/start", json={"name": name, "size": 10}).status_code, 201)
+        self._owned_drill(name)
         dbcompat.drop_drill(name)  # removed outside the connector
         subprocess.run([find_pg_tool("createdb"), name], env=exec_pg_environ(), check=True)  # someone else's
         self._assert_error(self._post("drop", json={"name": name}), 404, "db_not_found")
@@ -464,7 +408,7 @@ class TestSalvorConnector(HttpCase):
         self.cfg.drill_enabled = True
         name = drill_name("ut_unin")
         self.addCleanup(self._force_drop, name)
-        self.assertEqual(self._post("drill/start", json={"name": name, "size": 10}).status_code, 201)
+        self._owned_drill(name)
         uninstall_hook(self.env)
         self.assertTrue(os.path.exists(other.path))  # other databases' locks untouched
         self.assertFalse(dbcompat.pg_db_exists(name))  # our drill dropped
@@ -506,31 +450,6 @@ class TestSalvorConnector(HttpCase):
             cr.execute("SELECT x FROM public.salvor_ut_t")
             self.assertEqual(cr.fetchall(), [("SET transaction_timeout = 0;",)])
 
-    def test_drill_reports_the_real_psql_error(self):
-        """psql stops on the first error (ON_ERROR_STOP): the job reports psql's
-        message, not the BrokenPipeError of the writer."""
-        self.cfg.drill_enabled = True
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("dump.sql", "SELECT * FROM salvor_no_such_table;\n" + "SELECT 1;\n" * 200000)
-            zf.writestr("manifest.json", "{}")
-        archive = buf.getvalue()
-        name = drill_name("ut_err")
-        self.addCleanup(self._force_drop, name)
-        self.assertEqual(self._post("drill/start", json={"name": name, "size": len(archive)}).status_code, 201)
-        self._upload(name, 0, archive)
-        resp = self._post("drill/restore", json={"name": name, "sha256": hashlib.sha256(archive).hexdigest()})
-        self.assertEqual(resp.status_code, 202)
-        deadline = time.time() + 120
-        while True:
-            ds = self._post("drill/status", json={"name": name}).json()
-            if ds["state"] in ("done", "failed") or time.time() > deadline:
-                break
-            time.sleep(0.5)
-        self.assertEqual(ds["state"], "failed")
-        self.assertIn("salvor_no_such_table", ds["error"])
-        self.assertNotIn("Broken pipe", ds["error"])
-
     # --- psql meta-command guard (2.0.1) ------------------------------------
     def _guard(self, sql, size=None):
         from .. import jobrunner
@@ -562,6 +481,10 @@ class TestSalvorConnector(HttpCase):
             b"SELECT 'unterminated\n",
             b"COPY public.t (x) FROM stdin;\nrow\n",  # ends inside COPY data
             b"SELECT 1",  # ends inside a statement: the tail would be glued to it
+            b"SELECT 1; -- comment\r\\! touch /tmp/x\n",  # psql ends a -- comment at CR
+            b"SELECT 1; \x00\\! touch /tmp/x\n",
+            b"COPY/**/public.t (x) FROM stdin; \\! touch /tmp/x\n",
+            b"COPY/**/public.t (x) FROM stdin;\nrow\n",
         ]
         for sql in refused:
             for size in (1, 5, None):  # meta-commands split across chunk boundaries
@@ -579,68 +502,12 @@ class TestSalvorConnector(HttpCase):
         for size in (1, 3, 64, None):
             self.assertEqual(self._guard(sql, size), sql)
 
-    def _zip_with(self, dump_sql, base):
-        src = zipfile.ZipFile(io.BytesIO(base))
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for item in src.infolist():
-                zf.writestr(item.filename, dump_sql if item.filename == "dump.sql" else src.read(item))
-        return buf.getvalue()
-
-    def _drill(self, tag, archive):
-        name = drill_name(tag)
-        self._force_drop(name)
-        self.addCleanup(self._force_drop, name)
-        self.assertEqual(self._post("drill/start", json={"name": name, "size": len(archive)}).status_code, 201)
-        for off in range(0, len(archive), 64 * 1024 * 1024):
-            self._upload(name, off, archive[off:off + 64 * 1024 * 1024])
-        resp = self._post("drill/restore", json={"name": name, "sha256": hashlib.sha256(archive).hexdigest()})
-        self.assertEqual(resp.status_code, 202, resp.text[:300])
-        deadline = time.time() + 300
-        while True:
-            ds = self._post("drill/status", json={"name": name}).json()
-            if ds["state"] in ("done", "failed") or time.time() > deadline:
-                return ds
-            time.sleep(0.5)
-
-    def test_drill_refuses_crafted_archives(self):
-        """End to end: archives carrying psql meta-commands are refused before
-        psql runs them; the live database and the file system stay untouched;
-        an unmodified backup (with pg_dump's own \\restrict, when it writes one)
-        restores."""
-        self.cfg.drill_enabled = True
-        job_id, _st = self._run_job("zip")
-        base = self._post("backup/download", json={"job_id": job_id}).content
-        dump = zipfile.ZipFile(io.BytesIO(base)).read("dump.sql")
-        mark = os.path.join(tempfile.gettempdir(), "salvor_pwn_%s" % RUN)
-        self.addCleanup(lambda: os.path.exists(mark) and os.unlink(mark))
-        live = self.dbname
-        first_copy_end = dump.index(b"\n\\.\n") + 4
-        crafted = {
-            "shell": b"\\! touch %s\n" % mark.encode() + dump,
-            "connect": (b"\\c %s\nCREATE TABLE salvor_pwn_%s (x int);\n" % (live.encode(), RUN.encode())) + dump,
-            "out": b"\\o %s\n" % mark.encode() + dump,
-            "copyprog": b"\\copy (SELECT 1) TO PROGRAM 'touch %s'\n" % mark.encode() + dump,
-            "aftercopy": dump[:first_copy_end] + b"\\! touch %s\n" % mark.encode() + dump[first_copy_end:],
-            "midline": dump[:first_copy_end] + b"SELECT 1; \\! touch %s\n" % mark.encode() + dump[first_copy_end:],
-        }
-        for tag, sql in crafted.items():
-            ds = self._drill("ux" + tag[:6], self._zip_with(sql, base))
-            self.assertEqual(ds["state"], "failed", (tag, ds))
-            self.assertIn("unsafe archive", ds["error"], tag)
-            self.assertFalse(os.path.exists(mark), tag)
-        self.env.cr.execute("SELECT to_regclass(%s)", ("salvor_pwn_%s" % RUN,))
-        self.assertIsNone(self.env.cr.fetchone()[0])
-        legit = dump if b"\n\\restrict " in dump else (b"\\restrict K3y\n" + dump + b"\\unrestrict K3y\n")
-        ds = self._drill("uxlegit", self._zip_with(legit, base))
-        self.assertEqual(ds["state"], "done", ds)
-
     def test_drill_drop_button_and_stale_gc(self):
         self.cfg.drill_enabled = True
         name = drill_name("ut_btn")
         self._force_drop(name)
         self.addCleanup(self._force_drop, name)
-        self.assertEqual(self._post("drill/start", json={"name": name, "size": 10}).status_code, 201)
+        self._owned_drill(name)
         self.env.invalidate_all()
         rec = self.env["salvor.connector.drill"].search([("name", "=", name)])
         self.env["salvor.connector.drill"]._gc_stale()  # fresh: kept
@@ -654,39 +521,13 @@ class TestSalvorConnector(HttpCase):
         # the button, and Disconnect, drop what is left
         name2 = drill_name("ut_dis")
         self.addCleanup(self._force_drop, name2)
-        self.assertEqual(self._post("drill/start", json={"name": name2, "size": 10}).status_code, 201)
+        self._owned_drill(name2)
         self.env.invalidate_all()
         self.cfg.action_disconnect()
         self.assertFalse(self._drill_db_exists(name2))
         self.assertFalse(self.cfg.allowed_ips)
         self.assertFalse(self.cfg.drill_enabled)
         self.assertFalse(os.path.isdir(os.path.dirname(tools.drill_dir(self.dbname, name2))))
-
-    def test_drill_refuses_crafted_custom_dump(self):
-        """Same guard on the pg_restore -f - path: a custom dump whose TOC carries
-        a meta-command (length-preserving patch of a COMMENT) is refused."""
-        self.cfg.drill_enabled = True
-        src = drill_name("ut_src")
-        self._force_drop(src)
-        self.addCleanup(self._force_drop, src)
-        tools.create_drill_db(src)
-        mark = os.path.join(tempfile.gettempdir(), "salvor_pwnd_%s" % RUN)
-        self.addCleanup(lambda: os.path.exists(mark) and os.unlink(mark))
-        payload = b"';\n\\! touch " + mark.encode() + b"\n--"
-        filler = b"Z" * len(payload)
-        subprocess.run([find_pg_tool("psql"), "-q", "-X", "-v", "ON_ERROR_STOP=1", "--dbname=" + src, "-c",
-                        "CREATE TABLE t (x int); COMMENT ON TABLE t IS '%s'" % filler.decode()],
-                       env=exec_pg_environ(), check=True, capture_output=True)
-        dump = subprocess.run([find_pg_tool("pg_dump"), "-Fc", "-Z0", src], env=exec_pg_environ(),
-                              check=True, capture_output=True).stdout
-        self.assertIn(filler, dump)
-        ds = self._drill("uxcustom", dump.replace(filler, payload))
-        self.assertEqual(ds["state"], "failed", ds)
-        self.assertIn("unsafe archive", ds["error"])
-        self.assertFalse(os.path.exists(mark))
-        # the unpatched dump passes the guard (it then fails neutralization: no Odoo tables)
-        ds = self._drill("uxcustok", dump)
-        self.assertNotIn("unsafe archive", ds.get("error") or "")
 
     def test_backup_jobs_are_capped(self):
         ids = [self._run_job("dump")[0] for _ in range(3)]
