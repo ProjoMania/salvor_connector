@@ -235,6 +235,50 @@ UPDATE ir_config_parameter SET value = '%s' WHERE key = 'database.secret';
     return "\n".join(parts).encode()
 
 
+# Session settings a newer pg_dump writes that older servers reject (name -> first
+# server version that knows it). Only the dump's SET preamble is filtered.
+NEWER_SETTINGS = {b"transaction_timeout": 170000}
+PREAMBLE_BYTES = 256 * 1024
+
+
+def server_version_num(spec, dbname):
+    cnx = _connect(spec, dbname)
+    try:
+        with cnx.cursor() as cr:
+            cr.execute("SHOW server_version_num")
+            return int(cr.fetchone()[0])
+    finally:
+        cnx.close()
+
+
+def unsupported_settings(version):
+    return {name for name, since in NEWER_SETTINGS.items() if version < since}
+
+
+def filter_preamble(chunks, drop):
+    """Drop `SET <name> = ...;` lines for settings the target server does not
+    know, within the dump's preamble (before any data); the rest is passed
+    through untouched, so ON_ERROR_STOP still catches every real error."""
+    if not drop:
+        yield from chunks
+        return
+    head = b""
+    for chunk in chunks:
+        head += chunk
+        if len(head) >= PREAMBLE_BYTES:
+            break
+    else:
+        chunk = None
+    cut = head.rfind(b"\n") + 1 if len(head) >= PREAMBLE_BYTES else len(head)
+    lines = head[:cut].split(b"\n")
+    kept = [ln for ln in lines
+            if not any(ln.startswith(b"SET " + name + b" ") or ln.startswith(b"SET " + name + b"=")
+                       for name in drop)]
+    yield b"\n".join(kept)
+    yield head[cut:]
+    yield from chunks
+
+
 def run_restore(job):
     spec = job.spec
     target = spec["target"]
@@ -275,21 +319,26 @@ def run_restore(job):
                 feed = src.stdout
             else:
                 feed = open(sql_file, "rb")
-            with feed:
-                for chunk in iter(lambda: feed.read(CHUNK), b""):
-                    psql.stdin.write(chunk)
-            psql.stdin.write(b"\n")
-            psql.stdin.write(neutralize_tail(spec))
-            psql.stdin.close()
+            drop = unsupported_settings(server_version_num(spec, target))
+            try:
+                with feed:
+                    for chunk in filter_preamble(iter(lambda: feed.read(CHUNK), b""), drop):
+                        psql.stdin.write(chunk)
+                psql.stdin.write(b"\n")
+                psql.stdin.write(neutralize_tail(spec))
+                psql.stdin.close()
+            except BrokenPipeError:
+                pass  # psql stopped on an error: its stderr (below) says which
             rc = psql.wait()
             psql_err.seek(0)
             err = psql_err.read()
+            # psql first: when it stops on an error, pg_restore then dies of a broken pipe
+            if rc != 0:
+                raise RuntimeError("psql failed (code %s): %s" % (rc, err.decode(errors="replace")[-300:]))
             if src is not None and src.wait() != 0:
                 src_err.seek(0)
                 raise RuntimeError("pg_restore failed (code %s): %s" % (
                     src.returncode, src_err.read().decode(errors="replace")[-300:]))
-            if rc != 0:
-                raise RuntimeError("psql failed (code %s): %s" % (rc, err.decode(errors="replace")[-300:]))
         finally:
             for proc in (src, psql):
                 if proc is not None and proc.poll() is None:
