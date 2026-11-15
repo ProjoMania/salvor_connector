@@ -3,16 +3,23 @@
 Free LGPL-3 addon that lets [Salvor](https://salvorcloud.com) back up one Odoo database without the
 master password, with `list_db = False`, a `dbfilter`, or behind a reverse proxy.
 Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for older Salvor workers and
-`protocols: [1, 2]`; the v1 `backup` stream is still served; the v1 `restore` route answers 410 `drills_disabled`) —
+`protocols: [1, 2]`; the v1 `backup` stream is still served; the v1 `restore` route answers 410 `drills_removed`) —
 `docs/CONNECTOR-PROTOCOL.md` in the Salvor repo.
 
-> **Restore drills through the connector are disabled since 2.0.2.** Salvor checks each archive's
-> integrity (sha256); restore drills need a master-password or SSH connection. Restoring an archive as the database role that owns production cannot be made safe
-> by filtering the archive, so 2.0.0/2.0.1's drill endpoints answer 410 `drills_disabled` and the switch
-> is gone. **If you run 2.0.0 or 2.0.1, upgrade now**: those versions still serve their drill endpoints
-> to a token holder. Pull your branch, **restart Odoo** (it keeps running the old Python code until it
-> is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps). The hourly housekeeping, *Disconnect*, the `drop` call and the button on the
-> settings form remove drill databases those versions created.
+## Security advisory (SC-2026-01)
+**Upgrade to 2.0.4.** Restore drills through the connector could run `psql` meta-commands.
+- **Affected:** 1.0.0 (`/salvor/v1/restore` pipes archive SQL through `psql` when the drill switch is on);
+  2.0.0 (drill restore via `psql`, no meta-command guard); 2.0.1 (guard in place, failed review).
+- **Preconditions:** a valid connector token, an allowed IP, and drills enabled (off by default).
+- **Impact:** meta-commands such as `\!` could run OS commands as the Odoo service user, and `\c` could
+  reach other databases.
+- **Not affected:** 2.0.2 and 2.0.3: every drill route raises 410 before any work; the restore code is
+  unreachable. **Fixed:** 2.0.4: the code is removed.
+- **Action:** pull your branch, **restart Odoo**, then upgrade the module (`-u salvor_connector` or
+  *Upgrade* in Apps). Until then keep *Allow restore drills* off. Details: `SECURITY.md`.
+
+Salvor checks each archive's integrity (sha256); restore drills need a master-password or SSH
+connection. Leftover `salvor_drill_*` databases from 2.0.0/2.0.1 are still removed (see Security).
 
 Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
 `/proc`); Odoo on Windows or macOS is not supported.
@@ -25,15 +32,15 @@ Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job use
 ## Endpoints (`POST /salvor/v1/<name>`)
 | Endpoint | Body | Result |
 |---|---|---|
-| `info` | – | JSON: `protocol: 1`, `protocols: [1, 2]`, `capabilities` (`backup_job`, `range_download`, `audit_log`, `drill_cleanup`), versions, sizes, `drill_enabled: false`, free disk |
+| `info` | – | JSON: `protocol: 1`, `protocols: [1, 2]`, `capabilities` (`backup_job`, `range_download`, `audit_log`, `drill_cleanup`), versions, sizes, `drill_enabled: false` (constant), free disk |
 | `backup/start` | `{"format": "dump"\|"zip"}` | 202 `{job_id}`; the dump runs in a detached process |
 | `backup/status` | `{"job_id"}` | `{state, bytes, sha256 (when done), error}` |
 | `backup/download` | `{"job_id"}` (+ `Range`) | the archive, 200 or 206 (resumable) |
 | `backup/cleanup` | `{"job_id"}` | deletes the job file (otherwise removed by the hourly housekeeping once 6 h old) |
-| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **disabled since 2.0.2**: 410 `drills_disabled` (upload bodies over 1 KiB: 413) |
+| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **removed in 2.0.4**: 410 `drills_removed`, body not read (upload bodies over 1 KiB: 413) |
 | `drop` | `{"name"}` | drops a leftover drill db **this database created** (by oid) |
 | `backup` | v1 | streamed backup in one request, kept for older Salvor workers |
-| `restore` | v1 | 410 `drills_disabled` |
+| `restore` | v1 | 410 `drills_removed`, body not read |
 
 Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
@@ -44,7 +51,7 @@ for an unknown database, a database without the module, not paired, or a wrong t
 can still reveal whether a database exists (on 19+ through the status code it returns for an
 `X-Odoo-Database` header, and response timing differs), as it does for any page: restrict
 `/salvor/` to Salvor's IPs at nginx or the firewall if that matters to you — 403 (IP, Connector disabled),
-404 (db, job, or a drill this db does not own), 409 (busy / conflict), 410 (drills disabled), 416 (range),
+404 (db, job, or a drill this db does not own), 409 (busy / conflict), 410 (drills removed), 416 (range),
 422 (bad arguments), 507 (not enough disk).
 
 ## Security
