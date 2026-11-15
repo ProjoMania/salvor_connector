@@ -6,7 +6,7 @@ import requests
 from odoo import _, api, fields, models, release
 from odoo.exceptions import UserError
 
-from ..tools import PROTOCOL_VERSION, parse_ips, sha256_hex
+from ..tools import JOB_TTL_HOURS_DEFAULT, PROTOCOL_VERSION, parse_ips, sha256_hex, sweep_jobs
 
 _logger = logging.getLogger(__name__)
 
@@ -126,6 +126,39 @@ class SalvorConnectorConfig(models.Model):
         del token
         _logger.info("Salvor Connector paired (db=%s, instance=%s)", self.env.cr.dbname, self.instance_id)
         return True
+
+    def action_rotate(self):
+        """Rotate the token without a gap: Salvor (database menu → Rotate token)
+        issues a pairing code bound to this database; redeeming it here
+        replaces the token hash in one write, so the old token stops working
+        the moment the new one exists."""
+        self.ensure_one()
+        if not (self.pairing_code or "").strip():
+            raise UserError(_(
+                "To rotate the token, open this database in Salvor, choose \"Rotate token\", "
+                "paste the new pairing code above and click Rotate token again. The current token "
+                "keeps working until then. To cut Salvor off immediately, use Disconnect."))
+        return self.action_connect()
+
+    def action_view_log(self):
+        return self.env["ir.actions.act_window"]._for_xml_id("salvor_connector.action_salvor_connector_log")
+
+    @api.model
+    def _job_ttl_hours(self):
+        value = self.env["ir.config_parameter"].sudo().get_int(
+            "salvor_connector.job_ttl_hours", JOB_TTL_HOURS_DEFAULT)
+        try:
+            return max(int(value), 1)
+        except (TypeError, ValueError):
+            return JOB_TTL_HOURS_DEFAULT
+
+    @api.model
+    def _cron_housekeeping(self):
+        """Daily: expire backup job files of this database and old pull-log rows."""
+        removed = sweep_jobs(self.env.cr.dbname, self._job_ttl_hours())
+        if removed:
+            _logger.info("salvor_connector: removed %s expired backup job(s)", removed)
+        self.env["salvor.connector.log"]._gc_old_rows()
 
     def action_disconnect(self):
         self.ensure_one()

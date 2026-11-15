@@ -1,2 +1,4 @@
 id,name,model_id,group_id/id,operation,domain
 access_salvor_connector_config_system,salvor.connector.config system,salvor.connector.config,base.group_system,ru,
+access_salvor_connector_log_system,salvor.connector.log system,salvor.connector.log,base.group_system,r,
+access_salvor_connector_drill_system,salvor.connector.drill system,salvor.connector.drill,base.group_system,r,

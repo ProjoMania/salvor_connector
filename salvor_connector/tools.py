@@ -6,7 +6,10 @@ import json
 import os
 import queue
 import re
+import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -14,7 +17,14 @@ import zipfile
 from odoo.tools import config
 from odoo.tools.misc import exec_pg_environ, find_pg_tool
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+# v1 endpoints stay served for Salvor workers that predate v2.
+PROTOCOLS_SUPPORTED = [1, 2]
+CAPABILITIES = ["backup_job", "range_download", "drill_upload", "drill_owned", "drill_neutralize", "audit_log"]
+JOB_TTL_HOURS_DEFAULT = 24
+DRILL_DISK_FACTOR = 2.5
+BACKUP_DISK_MARGIN = 256 * 1024 * 1024
+JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 DRILL_RE = re.compile(r"^salvor_drill_[a-z0-9_]{1,40}$")
 # PostgreSQL identifiers Odoo accepts as db names (same charset as odoo.service.db).
 DBNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$")
@@ -70,6 +80,14 @@ class DbLock:
             return False
         self.fd = fd
         return True
+
+    def detach(self):
+        """Hand the held lock to a child that inherited ``self.fd``: close our
+        copy WITHOUT unlocking (flock belongs to the shared open file
+        description, so the child's copy keeps it until the child exits)."""
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
 
     def release(self):
         if self.fd is not None:
@@ -200,3 +218,266 @@ def stream_odoo_zip(dbname, manifest):
         except queue.Empty:
             pass
         thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------- v2 jobs
+def _private_dir(path):
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
+def jobs_root(dbname):
+    if not DBNAME_RE.match(dbname):
+        raise ValueError("bad db name")
+    return os.path.join(config["data_dir"], "salvor_connector", "jobs", dbname)
+
+
+def job_dir(dbname, job_id):
+    if not JOB_ID_RE.match(job_id or ""):
+        return None
+    return os.path.join(jobs_root(dbname), job_id)
+
+
+def drill_dir(dbname, name):
+    if not DRILL_RE.match(name or ""):
+        raise ValueError("bad drill name")
+    return os.path.join(config["data_dir"], "salvor_connector", "drills", dbname, name)
+
+
+def read_state(path):
+    try:
+        with open(os.path.join(path, "state.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(path, **values):
+    state = read_state(path)
+    state.update(values)
+    tmp = os.path.join(path, "state.json.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, os.path.join(path, "state.json"))
+    return state
+
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # a zombie child of this worker counts as dead
+    try:
+        with open("/proc/%d/stat" % int(pid), encoding="ascii") as fh:
+            return fh.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def live_state(path):
+    """state.json, with a 'running' job whose process vanished reported failed."""
+    state = read_state(path)
+    if state.get("state") in ("starting", "running") and not pid_alive(state.get("pid")):
+        started = state.get("spawned_at") or 0
+        if time.time() - started > 30:  # give a just-spawned runner time to write its pid
+            state = write_state(path, state="failed", error="job process exited unexpectedly")
+    return state
+
+
+def neutralize_sql_map():
+    """module -> path of its data/neutralize.sql, over every addons path
+    (the same files odoo.modules.neutralize runs, resolved here because the
+    detached runner does not import Odoo)."""
+    import odoo.addons
+    found = {}
+    for base in odoo.addons.__path__:
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for module in names:
+            path = os.path.join(base, module, "data", "neutralize.sql")
+            if module not in found and os.path.isfile(path):
+                found[module] = path
+    return found
+
+
+def spawn_runner(path, spec, lock=None):
+    """Write job.json and start jobrunner.py detached (own session).
+
+    The child inherits the held per-db flock and keeps it until it exits; the
+    caller's copy is closed without unlocking. A reaper thread waits on the
+    child while this worker lives (no zombie); if the worker is recycled first,
+    init adopts and reaps it.
+    """
+    fd = os.open(os.path.join(path, "job.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(spec, fh)
+    write_state(path, state="starting", spawned_at=time.time(), kind=spec["kind"])
+    runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobrunner.py")
+    args = [sys.executable, "-I", runner, path]
+    pass_fds = ()
+    if lock is not None and lock.fd is not None:
+        args.append(str(lock.fd))
+        pass_fds = (lock.fd,)
+    proc = subprocess.Popen(args, cwd=path, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=pass_fds,
+                            env=_runner_env())
+    write_state(path, pid=proc.pid)
+    if lock is not None:
+        lock.detach()
+
+    def reap():
+        try:
+            proc.wait()
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=reap, name="salvor-reap-%s" % proc.pid, daemon=True).start()
+    return proc.pid
+
+
+def _runner_env():
+    keep = ("PATH", "LANG", "LC_ALL", "TMPDIR", "HOME", "TZ")
+    env = {k: v for k, v in os.environ.items() if k in keep}
+    env.update(exec_pg_environ())
+    return env
+
+
+def disk_free(path):
+    os.makedirs(path, exist_ok=True)
+    return shutil.disk_usage(path).free
+
+
+def remove_tree(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def sweep_jobs(dbname, ttl_hours):
+    """Delete this database's backup jobs older than ttl_hours (finished or
+    not: a runner still alive after 2x ttl is terminated first)."""
+    root = jobs_root(dbname)
+    if not os.path.isdir(root):
+        return 0
+    removed = 0
+    now = time.time()
+    for job_id in os.listdir(root):
+        path = os.path.join(root, job_id)
+        if not JOB_ID_RE.match(job_id) or not os.path.isdir(path):
+            continue
+        state = read_state(path)
+        age = now - (state.get("spawned_at") or os.path.getmtime(path))
+        if age < ttl_hours * 3600:
+            continue
+        if state.get("state") in ("starting", "running") and pid_alive(state.get("pid")):
+            if age < 2 * ttl_hours * 3600:
+                continue
+            terminate(state.get("pid"))
+        remove_tree(path)
+        removed += 1
+    return removed
+
+
+def terminate(pid, timeout=30):
+    if not pid_alive(pid):
+        return
+    try:
+        os.killpg(int(pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    deadline = time.time() + timeout
+    while time.time() < deadline and pid_alive(pid):
+        time.sleep(0.2)
+    if pid_alive(pid):
+        try:
+            os.killpg(int(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def parse_range(header, size):
+    """Single byte range -> (start, end_inclusive), None for no header, or
+    raise ValueError (416)."""
+    if not header:
+        return None
+    m = _RANGE_RE.match(header.strip())
+    if not m or (not m.group(1) and not m.group(2)):
+        raise ValueError("unsupported range")
+    if m.group(1):
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else size - 1
+    else:  # suffix range: last N bytes
+        n = int(m.group(2))
+        start, end = max(size - n, 0), size - 1
+    end = min(end, size - 1)
+    if start >= size or start > end:
+        raise ValueError("range not satisfiable")
+    return start, end
+
+
+def iter_file(path, start, length):
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        left = length
+        while left > 0:
+            chunk = fh.read(min(CHUNK * 16, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+            yield chunk
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def system_db():
+    return config.get("db_system") or "postgres"
+
+
+class DatabaseExistsConflict(Exception):
+    pass
+
+
+def create_drill_db(name):
+    """CREATE DATABASE as the one atomic claim on a drill name: PostgreSQL
+    refuses a second CREATE of the same name, so two racing restores can never
+    both 'own' it (no exists-then-create window)."""
+    from contextlib import closing
+
+    import psycopg2
+    from psycopg2 import sql
+
+    import odoo
+
+    if not DRILL_RE.match(name):
+        raise ValueError("bad drill name")
+    template = config.get("db_template") or "template0"
+    with closing(odoo.sql_db.db_connect(system_db()).cursor()) as cr:
+        cr.rollback()
+        cr._cnx.autocommit = True
+        query = sql.SQL("CREATE DATABASE {} ENCODING 'unicode' {} TEMPLATE {}").format(
+            sql.Identifier(name),
+            sql.SQL("LC_COLLATE 'C'") if template == "template0" else sql.SQL(""),
+            sql.Identifier(template))
+        try:
+            cr.execute(query, log_exceptions=False)
+        except psycopg2.errors.DuplicateDatabase:
+            raise DatabaseExistsConflict(name) from None

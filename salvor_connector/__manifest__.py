@@ -1,7 +1,7 @@
 {
     "name": "Salvor Connector",
     "summary": "Back up this Odoo database to Salvor without the master password",
-    "version": "20.0.1.0.0",
+    "version": "20.0.2.0.0",
     "category": "Administration/Tools",
     "author": "ProjoMania",
     "website": "https://salvorcloud.com",
@@ -10,6 +10,7 @@
     "external_dependencies": {"python": ["requests"]},
     "data": [
         "data/salvor_connector_data.xml",
+        "data/salvor_connector_cron.xml",
         "views/salvor_connector_config_views.xml",
         'security/ir.access.csv',
     ],
