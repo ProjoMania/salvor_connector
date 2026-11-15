@@ -9,7 +9,7 @@
     <div class="oe_row oe_spaced">
         <div class="oe_span12">
             <div style="border:1px solid #dc2626;border-radius:6px;padding:10px 14px;margin-bottom:16px;">
-                <b>Security advisory: running any version below 2.0.4? Upgrade now</b> on every database where it
+                <b>Security advisory: running any version below 2.0.4? Upgrade to 2.0.6 now</b> on every database where it
                 is installed: pull your branch, <b>restart Odoo</b> (Odoo keeps running the old code until it is
                 restarted), then upgrade the module (<code>-u salvor_connector</code>, or <i>Upgrade</i> in Apps).
                 In 1.0.0, 2.0.0 and 2.0.1, <b>if Allow restore drills is ticked</b>, a caller holding the token from an
@@ -18,10 +18,16 @@
                 default). 2.0.2 and 2.0.3 refuse every drill call; 2.0.4 removes the restore code. Salvor refuses
                 connectors below 2.0.2. The upgrade itself drops nothing: leftover scratch databases that the module
                 created go by the hourly action, the button on the settings form, Disconnect or uninstall (see
-                below). After upgrading from 2.0.2 or 2.0.3 the pairing is kept and backups go on as before.
+                below). After upgrading from 2.0.2, 2.0.3, 2.0.4 or 2.0.5 the pairing is kept and backups go on as before.
                 <b>After upgrading from 1.0.0, 2.0.0 or 2.0.1, pair again</b>: Salvor no longer accepts those
                 versions, so take a new pairing code in Salvor and click Connect. Details:
+<<<<<<< HEAD
                 <a href="https://github.com/ProjoMania/salvor_connector/blob/17.0/SECURITY.md">SECURITY.md</a>.
+=======
+                <a href="https://github.com/ProjoMania/salvor_connector/blob/17.0/SECURITY.md">SECURITY.md</a>.
+                Report a vulnerability privately through GitHub (<i>Security &rarr; Report a vulnerability</i> on the
+                repository) or by email to <a href="mailto:security@salvorcloud.com">security@salvorcloud.com</a>.
+>>>>>>> 3fd9c73 ([SEC] salvor_connector 2.0.6: body limit on every route, reporting paths)
             </div>
 
             <h4 style="color:#0d9488;">What it is</h4>
