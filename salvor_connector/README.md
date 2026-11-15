@@ -6,6 +6,12 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
 `protocols: [1, 2]`; the v1 `backup` stream is still served, the v1 `restore` route was removed in 2.0.1) —
 `docs/CONNECTOR-PROTOCOL.md` in the Salvor repo.
 
+> **Restore drills through the connector are disabled in this version (2.0.2); Salvor verifies backups
+> on its own side.** Restoring an archive as the database role that owns production cannot be made safe
+> by filtering the archive, so 2.0.0/2.0.1's drill endpoints answer 410 `drills_disabled` and the switch
+> is gone. Upgrade from 2.0.0/2.0.1 now: the hourly housekeeping, *Disconnect*, the `drop` call and the
+> *Drop* buttons still remove drill databases those versions created.
+
 Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
 `/proc`); Odoo on Windows or macOS is not supported.
 
@@ -22,10 +28,10 @@ Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job use
 | `backup/status` | `{"job_id"}` | `{state, bytes, sha256 (when done), error}` |
 | `backup/download` | `{"job_id"}` (+ `Range`) | the archive, 200 or 206 (resumable) |
 | `backup/cleanup` | `{"job_id"}` | deletes the job file (otherwise removed by the hourly housekeeping once 6 h old) |
-| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | see protocol | drills only: claim, chunked upload, restore + neutralize, poll |
-| `drop` | `{"name"}` | drills only: drops a drill db **this database created** |
+| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **disabled in 2.0.2**: 410 `drills_disabled` |
+| `drop` | `{"name"}` | drops a leftover drill db **this database created** (by oid) |
 | `backup` | v1 | streamed backup in one request, kept for older Salvor workers |
-| `restore` | v1 | **removed in 2.0.1**: answers 410 `gone` |
+| `restore` | v1 | 410 `drills_disabled` |
 
 Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
@@ -36,7 +42,7 @@ for an unknown database, a database without the module, not paired, or a wrong t
 can still reveal whether a database exists (on 19+ through the status code it returns for an
 `X-Odoo-Database` header, and response timing differs), as it does for any page: restrict
 `/salvor/` to Salvor's IPs at nginx or the firewall if that matters to you — 403 (IP, disabled, drills off),
-404 (db, job, or a drill this db does not own), 409 (busy / conflict), 410 (removed route), 416 (range),
+404 (db, job, or a drill this db does not own), 409 (busy / conflict), 410 (drills disabled), 416 (range),
 422 (bad arguments), 507 (not enough disk).
 
 ## Security
@@ -61,25 +67,11 @@ can still reveal whether a database exists (on 19+ through the status code it re
   minute per database, counted in the database, all workers together), kept 14 days, and the table
   is capped at 200,000 rows; at the cap refusals are evicted first, so a flood of refused calls never
   pushes out the history of successful ones.
-- Drills are off by default. A drill database is created with an atomic `CREATE DATABASE`
-  (an existing name is refused, never taken over), recorded as owned by this database
-  (*Drill Databases* menu), restored only from the archive whose sha256 Salvor committed to, and
-  **neutralized in the same transaction as the restore** (every installed module's
-  `neutralize.sql`: crons and outgoing mail off; Salvor pairing cleared; new database uuid), so no
-  cron thread ever sees it active, and only drill databases this database
-  created can be dropped. Names must match `^salvor_drill_[a-z0-9_]{1,40}$`; never the live db.
-- **What a drill archive may contain:** the archive's SQL is run by `psql` (`-X`, no psqlrc, a minimal
-  environment). psql also runs backslash meta-commands (`\!` shell, `\connect`, `\o`, `\copy ... program`),
-  so every line is checked before psql sees it: outside quoted strings, dollar-quoted bodies and
-  `COPY ... FROM stdin` data, any backslash command except pg_dump's own `\restrict`/`\unrestrict` pair
-  fails the drill with "unsafe archive". A plain string literal or a comment containing a backslash, and
-  any `COPY` other than pg_dump's `COPY <table> (...) FROM stdin;`, are refused too. A backup made by
-  `pg_dump` passes. The SQL itself still runs with the Odoo role's rights, inside the drill database.
-- A drill database is a full copy, logins included, reachable like any database while it exists (unless
-  a `dbfilter`/`db_name` excludes `salvor_drill_*`). Salvor drops it right after the check; one older than
-  24 h (`salvor_connector.drill_ttl_hours`) is dropped by the hourly housekeeping, **Disconnect** drops
-  them all, and *Drill Databases* has a **Drop** button.
-- Drills refuse to start unless the Odoo `data_dir` has at least **2.5 × the archive size** free.
+- Drill databases left by 2.0.0/2.0.1 (named `salvor_drill_*`, recorded with their oid under *Drill
+  Databases*) are full copies of production, logins included: the hourly housekeeping drops those older
+  than 24 h (`salvor_connector.drill_ttl_hours`), *Disconnect* drops them all, and both the list and the
+  settings form have a **Drop** button. A database of that name the connector did not create is never
+  touched.
 - No endpoint lists databases. The only outbound call is the HTTPS pairing POST.
 
 ## Requirements
@@ -90,8 +82,6 @@ can still reveal whether a database exists (on 19+ through the status code it re
 - **Uninstall** stops this database's jobs, deletes its job and drill files and drops the drill
   databases it created (if still the same database, by oid). A drill that is busy at that moment
   is left and logged — drop it by hand.
-- Drills need the Odoo PostgreSQL role to have **`CREATEDB`** (`ALTER ROLE odoo CREATEDB;`), the
-  same privilege Odoo's own database manager uses. Backups need nothing extra.
 - Backups write a temporary archive (0600, owner-only) under
   `<data_dir>/salvor_connector/jobs/<db>/`: keep free space ≥ database size (+ filestore for zip).
   The file is **not encrypted**: it exists from the start of the dump until Salvor's download
@@ -115,8 +105,7 @@ job TTL; it imports nothing from Odoo and only runs `pg_dump` and reads the file
   endpoint used by older Salvor workers; v2 makes them irrelevant, so no limit needs raising.
 - Revocation is checked on every request (each download range is a request) and, for a legacy v1
   stream, every 30 s while it runs; *Disconnect* also stops a running backup job and deletes its file.
-- nginx: no special timeouts are needed for v2. Keep `client_max_body_size` ≥ 257m on
-  `/salvor/` for drill uploads (64 MiB chunks from Salvor, 256 MiB accepted) and do not buffer
+- nginx: no special timeouts are needed for v2. Do not buffer
   `/salvor/v1/backup` for v1 workers (`proxy_buffering off`; responses send `X-Accel-Buffering: no`).
 
 ## Tests

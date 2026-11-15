@@ -384,6 +384,8 @@ class PsqlGuard:
 
     def check_line(self, line):
         self.line_no += 1
+        if b"\x00" in line:  # psql and the server stop reading a string at NUL: no common reading
+            self._refuse("NUL byte")
         if self.mode == "copy":
             if line in (b"\\.\n", b"\\.\r\n", b"\\."):
                 self.mode = "sql"
@@ -404,8 +406,13 @@ class PsqlGuard:
             if mode == "sql":
                 if c == 0x5C:  # backslash
                     self._refuse("psql meta-command")
-                if c == 0x2D and line[i + 1:i + 2] == b"-":  # -- comment to end of line
-                    break
+                if c == 0x2D and line[i + 1:i + 2] == b"-":  # -- comment: psql ends it at \r or \n
+                    self.stmt += b" "
+                    cr = line.find(b"\r", i)
+                    if cr < 0:
+                        break
+                    i = cr + 1
+                    continue
                 if c == 0x2F and line[i + 1:i + 2] == b"*":
                     self.mode, self.depth = "block", 1
                     i += 2
@@ -468,6 +475,7 @@ class PsqlGuard:
                     i += 2
                     if not self.depth:
                         self.mode = "sql"
+                        self.stmt += b" "  # a comment separates tokens: COPY/**/t is COPY t
                     continue
                 i += 1
 
