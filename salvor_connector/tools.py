@@ -21,7 +21,7 @@ PROTOCOL_VERSION = 2
 # v1 endpoints stay served for Salvor workers that predate v2.
 PROTOCOLS_SUPPORTED = [1, 2]
 CAPABILITIES = ["backup_job", "range_download", "drill_upload", "drill_owned", "drill_neutralize", "audit_log"]
-JOB_TTL_HOURS_DEFAULT = 24
+JOB_TTL_HOURS_DEFAULT = 6
 DRILL_DISK_FACTOR = 2.5
 BACKUP_DISK_MARGIN = 256 * 1024 * 1024
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
