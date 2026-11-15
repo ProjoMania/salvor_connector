@@ -18,7 +18,10 @@
                 default). 2.0.2 and 2.0.3 refuse every drill call; 2.0.4 removes the restore code. Salvor refuses
                 connectors below 2.0.2. The upgrade itself drops nothing: leftover scratch databases that the module
                 created go by the hourly action, the button on the settings form, Disconnect or uninstall (see
-                below). The pairing is kept and backups go on as before.
+                below). After upgrading from 2.0.2 or 2.0.3 the pairing is kept and backups go on as before.
+                <b>After upgrading from 1.0.0, 2.0.0 or 2.0.1, pair again</b>: Salvor no longer accepts those
+                versions, so take a new pairing code in Salvor and click Connect. Details:
+                <a href="https://github.com/ProjoMania/salvor_connector/blob/17.0/SECURITY.md">SECURITY.md</a>.
             </div>
 
             <h4 style="color:#0d9488;">What it is</h4>
@@ -75,7 +78,7 @@
             </ul>
             <p>
                 The older backup call from before 2.0 (a backup streamed inside one request) is still answered, with
-                the same checks; Salvor uses it only with a module older than 2.0. A backup is a complete copy of the
+                the same checks. A backup is a complete copy of the
                 database: treat the right to download it as read access to everything in it.
             </p>
 
@@ -87,9 +90,9 @@
                 <li>Back up a database it was not paired with, call from an address not on the allow list (an empty
                     list refuses everyone), or work while the Connector is disabled or disconnected.</li>
                 <li>Change the module's settings, write to your data or run code on the server.</li>
-                <li>Start a restore drill: the restore code was removed in 2.0.4. Drill calls get <code>410</code> (an
-                    upload with more than 1 KiB gets <code>413</code> from Odoo; a caller without a valid token is
-                    refused like any other).</li>
+                <li>Start a restore drill: the restore code was removed in 2.0.4. Drill calls are checked like every other
+                    call (token, address, enabled, logged in the Pull Log) and then get <code>410</code>; a body over
+                    1 KiB gets <code>413</code> from Odoo.</li>
             </ul>
 
             <h4 style="color:#0d9488;">Works on hardened servers</h4>

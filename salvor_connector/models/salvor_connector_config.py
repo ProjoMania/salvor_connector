@@ -28,11 +28,6 @@ class SalvorConnectorConfig(models.Model):
         string="Allowed IPs", copy=False,
         help="Salvor source addresses or CIDR ranges, comma or newline separated. "
              "Requests from any other address are refused (empty = refuse all).")
-    drill_enabled = fields.Boolean(
-        string="Allow restore drills (removed)", default=False, readonly=True,
-        help="Kept for data compatibility only: restore drills were removed from the connector "
-             "in 2.0.4 (disabled since 2.0.2). Salvor checks each archive's integrity (sha256); restore drills need a "
-             "master-password or SSH connection.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -162,10 +157,6 @@ class SalvorConnectorConfig(models.Model):
         self.env["salvor.connector.log"]._gc_old_rows()
         self.env["salvor.connector.drill"]._gc_stale(self._job_ttl_hours())
 
-    @api.model
-    def _force_drills_off(self):
-        self.sudo().search([("drill_enabled", "=", True)]).write({"drill_enabled": False})
-
     leftover_drill_count = fields.Integer(compute="_compute_leftover_drill_count")
 
     def _compute_leftover_drill_count(self):
@@ -186,10 +177,10 @@ class SalvorConnectorConfig(models.Model):
     def action_disconnect(self):
         self.ensure_one()
         self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False,
-                    "allowed_ips": False, "drill_enabled": False})
+                    "allowed_ips": False})
         # revoking also stops running backup jobs and deletes their files now
         sweep_jobs(self.env.cr.dbname, 0)
-        # ...stops a running drill restore, drops the drill databases it created
+        # ...drops the drill databases it created
         # (oid-checked) and deletes uploaded drill archives: Salvor can no longer ask
         for drill in self.env["salvor.connector.drill"].sudo().search([("state", "!=", "dropped")]):
             try:

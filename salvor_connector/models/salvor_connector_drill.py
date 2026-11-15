@@ -25,7 +25,7 @@ class SalvorConnectorDrill(models.Model):
         ("dropped", "Dropped"),
     ], required=True, default="created", readonly=True)
     pg_oid = fields.Char(string="PostgreSQL OID", readonly=True,
-                         help="Identity of the database this connector created: drop/restore "
+                         help="Identity of the database this connector created: drop "
                               "act only if a database with this name AND this oid exists.")
     archive_bytes = fields.Float(readonly=True, digits=(16, 0))
     neutralization = fields.Char(readonly=True)
@@ -35,7 +35,7 @@ class SalvorConnectorDrill(models.Model):
 
     def _drop_owned(self, wait=10.0):
         """Drop each drill database this connector created (same name AND oid),
-        stopping a running restore first; mark the record dropped. A database of
+        stopping a leftover runner first; mark the record dropped. A database of
         that name we did not create is never touched. Returns the names dropped."""
         import time
 
@@ -77,11 +77,10 @@ class SalvorConnectorDrill(models.Model):
 
     @api.model
     def _gc_stale(self, job_ttl_hours=6):
-        """Drill databases older than salvor_connector.drill_ttl_hours (default 24)
-        are dropped: Salvor drops its drill right after checking it, so one this
-        old was orphaned (Disconnect mid-drill, Salvor unreachable). A drill whose
-        upload or restore never finished (created, uploading, restoring, failed) is dropped, with its uploaded archive,
-        after the backup job TTL (6 h), like a backup file."""
+        """Leftover drill databases of 2.0.0/2.0.1 older than
+        salvor_connector.drill_ttl_hours (default 24) are dropped. One whose
+        upload or restore never finished (created, uploading, restoring, failed)
+        is dropped, with its uploaded archive, after the backup job TTL (6 h)."""
         try:
             ttl = int(self.env["ir.config_parameter"].sudo().get_param(
                 "salvor_connector.drill_ttl_hours") or 24)
