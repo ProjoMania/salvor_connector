@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="ir_cron_salvor_connector_housekeeping" model="ir.cron">
+        <field name="name">Salvor Connector: expire backup files and old pull log</field>
+        <field name="model_id" ref="model_salvor_connector_config"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_housekeeping()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="numbercall">-1</field>
+        <field name="active" eval="True"/>
+    </record>
+</odoo>

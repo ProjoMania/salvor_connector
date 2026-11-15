@@ -1,14 +1,24 @@
-"""Salvor Connector protocol v1 endpoints (see docs/CONNECTOR-PROTOCOL.md).
+"""Salvor Connector protocol endpoints, v1 + v2 (see docs/CONNECTOR-PROTOCOL.md).
 
 Every endpoint: POST only, auth="none", csrf=False, bearer token compared in
 constant time against sha256(token) stored in the database named by
 X-Salvor-Db, source-IP allowlist, one backup/restore at a time per database.
+
+v2 moves the work out of the HTTP request: backup/start launches a detached
+runner (tools.spawn_runner / jobrunner.py) that writes the archive to a 0600
+file under data_dir; Salvor polls backup/status and fetches the file with
+backup/download in byte ranges, so no single request lives long enough for
+limit_time_real or a proxy timeout to matter. Drills mirror it: drill/start
+claims the name (atomic CREATE DATABASE + ownership record), drill/upload
+appends ranges, drill/restore runs the restore + neutralization detached.
 """
 import hmac
 import json
 import logging
 import os
-import tempfile
+import re
+import secrets
+import time
 
 import odoo
 from odoo import SUPERUSER_ID, api, fields, http, release
@@ -17,20 +27,30 @@ from odoo.modules.registry import Registry
 from odoo.tools import config
 
 from .. import dbcompat
-from ..tools import (DBNAME_RE, DRILL_RE, PROTOCOL_VERSION, DbLock, ip_allowed, sha256_hex,
+from .. import tools
+from ..tools import (BACKUP_DISK_MARGIN, CAPABILITIES, DBNAME_RE, DRILL_DISK_FACTOR, DRILL_RE,
+                     PROTOCOL_VERSION, PROTOCOLS_SUPPORTED, DbLock, ip_allowed, sha256_hex,
                      stream_odoo_zip, stream_pg_dump)
+from odoo.tools.misc import find_pg_tool
 
 _logger = logging.getLogger(__name__)
 
 MAX_JSON_BODY = 64 * 1024
 CONFIG_MODEL = "salvor.connector.config"
+LOG_MODEL = "salvor.connector.log"
+DRILL_MODEL = "salvor.connector.drill"
+UPLOAD_CHUNK_MAX = 256 * 1024 * 1024
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
+# v1 restore takes the whole archive in one multipart body: lift Odoo's 128 MiB default
+RESTORE_OPTS = dict(ROUTE_OPTS, max_content_length=None)
+UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=UPLOAD_CHUNK_MAX + 1024)
 
 
 class SalvorError(Exception):
-    def __init__(self, status, code, message):
+    def __init__(self, status, code, message, **extra):
         super().__init__(message)
-        self.status, self.code, self.message = status, code, message
+        self.status, self.code, self.message, self.extra = status, code, message, extra
 
 
 def _json(data, status=200):
@@ -100,28 +120,27 @@ class SalvorConnectorController(http.Controller):
             raise SalvorError(403, "disabled", "Connector is disabled")
         return dbname, registry, settings
 
-    def _audit(self, dbname, endpoint, status, detail=""):
-        """Write an ir.logging row (never contains the token) and touch last_call_at."""
+    def _audit(self, dbname, endpoint, status, result="ok", detail="", job_id=None, nbytes=None):
+        """One salvor.connector.log row per call (never the token), visible in
+        Settings → Technical → Salvor Connector → Pull Log; touch last_call_at."""
         addr = _remote_addr()
-        msg = "salvor_connector %s -> %s from %s %s" % (endpoint, status, addr, detail)
-        _logger.info(msg.strip())
+        _logger.info("salvor_connector %s -> %s %s from %s %s", endpoint, status, result, addr, detail or "")
         if not dbname:
             return
         try:
             registry = Registry.registries[dbname] if dbname in Registry.registries else None
-            if registry is None or CONFIG_MODEL not in registry:
+            if registry is None or LOG_MODEL not in registry:
                 return
             with registry.cursor() as cr:
                 env = api.Environment(cr, SUPERUSER_ID, {})
-                env["ir.logging"].sudo().create({
-                    "name": "salvor_connector",
-                    "type": "server",
-                    "dbname": dbname,
-                    "level": "INFO" if status < 400 else "WARNING",
-                    "message": msg.strip()[:2000],
-                    "path": "/salvor/v1/" + endpoint,
-                    "func": endpoint,
-                    "line": str(status),
+                env[LOG_MODEL].sudo().create({
+                    "endpoint": endpoint,
+                    "http_status": status,
+                    "result": result,
+                    "remote_addr": addr[:64],
+                    "job_id": job_id or False,
+                    "bytes": nbytes or 0,
+                    "detail": (detail or "")[:500],
                 })
                 if status < 400:
                     env[CONFIG_MODEL]._get_singleton().write({"last_call_at": fields.Datetime.now()})
@@ -150,8 +169,8 @@ class SalvorConnectorController(http.Controller):
             return func(dbname, registry, settings)
         except SalvorError as e:
             # only audit into the db once we know it really hosts the connector
-            self._audit(dbname or self._known_db(), endpoint, e.status, e.code)
-            return _json({"error": e.code, "message": e.message}, e.status)
+            self._audit(dbname or self._known_db(), endpoint, e.status, e.code, e.message[:200])
+            return _json(dict(e.extra, error=e.code, message=e.message), e.status)
 
     @staticmethod
     def _known_db():
@@ -176,6 +195,10 @@ class SalvorConnectorController(http.Controller):
                 "db_size_bytes": int(db_size),
                 "filestore_bytes_estimate": int(fs_size),
                 "drill_enabled": bool(settings["drill_enabled"]),
+                "protocols": PROTOCOLS_SUPPORTED,
+                "capabilities": CAPABILITIES,
+                "data_dir_free_bytes": int(tools.disk_free(config["data_dir"])),
+                "upload_chunk_max": UPLOAD_CHUNK_MAX,
             })
         return self._handle("info", run)
 
@@ -198,7 +221,7 @@ class SalvorConnectorController(http.Controller):
             except Exception:
                 lock.release()
                 raise
-            self._audit(dbname, "backup", 200, "format=%s started" % fmt)
+            self._audit(dbname, "backup", 200, detail="v1 streamed, format=%s" % fmt)
 
             def generate():
                 ok = False
@@ -220,67 +243,437 @@ class SalvorConnectorController(http.Controller):
             ])
         return self._handle("backup", run)
 
-    @http.route("/salvor/v1/restore", **ROUTE_OPTS)
+    # ------------------------------------------------------- v2: backup job
+    @http.route("/salvor/v1/backup/start", **ROUTE_OPTS)
+    def backup_start(self, **kw):
+        def run(dbname, registry, settings):
+            fmt = self._json_body().get("format", "dump")
+            if fmt not in ("dump", "zip"):
+                raise SalvorError(422, "bad_args", "format must be 'dump' or 'zip'")
+            with registry.cursor() as cr:
+                env = api.Environment(cr, SUPERUSER_ID, {})
+                ttl = env[CONFIG_MODEL]._job_ttl_hours()
+                cr.execute("SELECT pg_database_size(current_database())")
+                db_size = cr.fetchone()[0]
+                fs_size = 0
+                manifest = None
+                if fmt == "zip":
+                    cr.execute("SELECT COALESCE(SUM(file_size), 0) FROM ir_attachment WHERE store_fname IS NOT NULL")
+                    fs_size = cr.fetchone()[0]
+                    manifest = dbcompat.dump_manifest(cr)
+            tools.sweep_jobs(dbname, ttl)
+            # pg_dump output is smaller than the live db; attachments are stored as-is in a zip
+            estimate = int(db_size) + int(fs_size)
+            free = tools.disk_free(config["data_dir"])
+            if free < estimate + BACKUP_DISK_MARGIN:
+                raise SalvorError(507, "insufficient_disk",
+                                  "Not enough free disk in the Odoo data_dir for the backup file",
+                                  free_bytes=int(free), required_bytes=int(estimate + BACKUP_DISK_MARGIN))
+            lock = DbLock(dbname)
+            if not lock.acquire():
+                raise SalvorError(409, "busy", "Another backup or restore is running for this database")
+            try:
+                job_id = secrets.token_hex(16)
+                path = tools.job_dir(dbname, job_id)
+                tools._private_dir(tools.jobs_root(dbname))
+                tools._private_dir(path)
+                spec = {
+                    "kind": "backup",
+                    "format": fmt,
+                    "db": dbname,
+                    "pg_dump": find_pg_tool("pg_dump"),
+                    "filestore": config.filestore(dbname) if fmt == "zip" else "",
+                    "manifest": manifest,
+                    "estimate_bytes": estimate,
+                }
+                tools.spawn_runner(path, spec, lock=lock)
+            finally:
+                lock.release()  # no-op once handed to the runner
+            self._audit(dbname, "backup/start", 202, detail="format=%s estimate=%s" % (fmt, estimate), job_id=job_id)
+            return _json({"job_id": job_id, "state": "running", "format": fmt,
+                          "estimate_bytes": estimate, "expires_in_hours": ttl}, 202)
+        return self._handle("backup/start", run)
+
+    def _job(self, dbname):
+        job_id = str(self._json_body().get("job_id") or "")
+        path = tools.job_dir(dbname, job_id)
+        if not path or not os.path.isdir(path):
+            raise SalvorError(404, "job_not_found", "Unknown or expired backup job")
+        return job_id, path
+
+    @staticmethod
+    def _job_out(job_id, path, state):
+        archive = os.path.join(path, "archive")
+        size = os.path.getsize(archive) if os.path.exists(archive) else 0
+        out = {
+            "job_id": job_id,
+            "state": "running" if state.get("state") == "starting" else state.get("state", "running"),
+            "format": None,
+            "bytes": int(state.get("bytes") or size) if state.get("state") == "done" else size,
+            "sha256": state.get("sha256") if state.get("state") == "done" else None,
+            "error": state.get("error"),
+            "started_at": state.get("started_at"),
+            "finished_at": state.get("finished_at"),
+        }
+        return out
+
+    @http.route("/salvor/v1/backup/status", **ROUTE_OPTS)
+    def backup_status(self, **kw):
+        def run(dbname, registry, settings):
+            job_id, path = self._job(dbname)
+            state = tools.live_state(path)
+            out = self._job_out(job_id, path, state)
+            try:
+                with open(os.path.join(path, "job.json"), encoding="utf-8") as fh:
+                    out["format"] = json.load(fh).get("format")
+            except (OSError, ValueError):
+                pass
+            if out["state"] in ("done", "failed") and not state.get("audited"):
+                tools.write_state(path, audited=True)
+                self._audit(dbname, "backup/job", 200 if out["state"] == "done" else 500,
+                            out["state"] if out["state"] == "done" else "job_failed",
+                            detail=(out["error"] or "sha256=%s" % out["sha256"]), job_id=job_id, nbytes=out["bytes"])
+            return _json(out)
+        return self._handle("backup/status", run)
+
+    @http.route("/salvor/v1/backup/download", **ROUTE_OPTS)
+    def backup_download(self, **kw):
+        def run(dbname, registry, settings):
+            job_id, path = self._job(dbname)
+            state = tools.live_state(path)
+            if state.get("state") != "done":
+                raise SalvorError(409, "not_ready", "The backup job has not finished", state=state.get("state"))
+            archive = os.path.join(path, "archive")
+            size = os.path.getsize(archive)
+            try:
+                rng = tools.parse_range(request.httprequest.headers.get("Range"), size)
+            except ValueError:
+                self._audit(dbname, "backup/download", 416, "bad_range", job_id=job_id)
+                return Response(status=416, headers=[("Content-Range", "bytes */%d" % size)])
+            start, end = rng if rng else (0, size - 1)
+            length = end - start + 1 if size else 0
+            headers = [
+                ("Content-Type", "application/octet-stream"),
+                ("Content-Length", str(length)),
+                ("Accept-Ranges", "bytes"),
+                ("ETag", '"%s"' % state["sha256"]),
+                ("X-Salvor-Sha256", state["sha256"]),
+                ("X-Salvor-Size", str(size)),
+                ("Cache-Control", "no-store"),
+                ("X-Accel-Buffering", "no"),
+            ]
+            if rng:
+                headers.append(("Content-Range", "bytes %d-%d/%d" % (start, end, size)))
+            self._audit(dbname, "backup/download", 206 if rng else 200,
+                        detail="bytes %d-%d/%d" % (start, end, size), job_id=job_id, nbytes=length)
+            return Response(tools.iter_file(archive, start, length), status=206 if rng else 200,
+                            headers=headers, direct_passthrough=True)
+        return self._handle("backup/download", run)
+
+    @http.route("/salvor/v1/backup/cleanup", **ROUTE_OPTS)
+    def backup_cleanup(self, **kw):
+        def run(dbname, registry, settings):
+            job_id, path = self._job(dbname)
+            state = tools.read_state(path)
+            if state.get("state") in ("starting", "running"):
+                tools.terminate(state.get("pid"))
+            tools.remove_tree(path)
+            self._audit(dbname, "backup/cleanup", 200, job_id=job_id)
+            return _json({"ok": True, "job_id": job_id})
+        return self._handle("backup/cleanup", run)
+
+    # ------------------------------------------------------------ drills
+    def _drill_record(self, registry, name):
+        with registry.cursor() as cr:
+            env = api.Environment(cr, SUPERUSER_ID, {})
+            rec = env[DRILL_MODEL].search([("name", "=", name), ("state", "!=", "dropped")], limit=1)
+            return rec.id or None, rec.state or None
+
+    def _drill_write(self, registry, rec_id, **vals):
+        with registry.cursor() as cr:
+            env = api.Environment(cr, SUPERUSER_ID, {})
+            env[DRILL_MODEL].browse(rec_id).write(vals)
+
+    def _drill_owned(self, registry, name):
+        rec_id, state = self._drill_record(registry, name)
+        if not rec_id:
+            # Not created by THIS database's connector: refuse, whatever exists on the cluster.
+            raise SalvorError(404, "db_not_found", "No drill database of that name was created by this connector")
+        return rec_id, state
+
+    def _drill_claim(self, dbname, registry, name, size):
+        """Disk precheck, then the atomic claim: CREATE DATABASE (fails if the
+        name exists anywhere on the cluster) and the ownership record."""
+        need = int(size * DRILL_DISK_FACTOR)
+        free = tools.disk_free(config["data_dir"])
+        if free < need:
+            raise SalvorError(507, "insufficient_disk",
+                              "Drill refused: %d MiB free in the Odoo data_dir, %d MiB needed (2.5x the archive)"
+                              % (free // 2 ** 20, need // 2 ** 20), free_bytes=int(free), required_bytes=need)
+        if self._drill_record(registry, name)[0]:
+            raise SalvorError(409, "drill_exists", "This drill database already exists; drop it first")
+        try:
+            tools.create_drill_db(name)
+        except tools.DatabaseExistsConflict:
+            raise SalvorError(409, "drill_exists", "A database with this name already exists") from None
+        try:
+            with registry.cursor() as cr:
+                env = api.Environment(cr, SUPERUSER_ID, {})
+                rec_id = env[DRILL_MODEL].create({"name": name, "state": "uploading", "archive_bytes": size}).id
+        except Exception:
+            dbcompat.drop_drill(name)  # we created it a moment ago; nothing else can own it
+            raise
+        path = tools.drill_dir(dbname, name)
+        tools.remove_tree(path)
+        tools._private_dir(path)
+        return rec_id, path
+
+    def _restore_spec(self, name):
+        return {
+            "kind": "restore",
+            "target": name,
+            "pg_restore": find_pg_tool("pg_restore"),
+            "psql": find_pg_tool("psql"),
+            "filestore_dest": config.filestore(name),
+            "neutralize_sql": tools.neutralize_sql_map(),
+            "pg_env": {},  # libpq settings come through the runner environment
+        }
+
+    def _sync_drill(self, registry, rec_id, path):
+        """Mirror the runner's outcome into the ownership record."""
+        state = tools.live_state(path)
+        vals = {}
+        if state.get("state") == "done":
+            vals = {"state": "restored", "neutralization": json.dumps(state.get("neutralization"))[:500]}
+        elif state.get("state") == "failed":
+            vals = {"state": "failed", "error": (state.get("error") or "")[:500]}
+        if vals:
+            self._drill_write(registry, rec_id, **vals)
+        return state
+
+    @http.route("/salvor/v1/drill/start", **ROUTE_OPTS)
+    def drill_start(self, **kw):
+        def run(dbname, registry, settings):
+            self._require_drills(settings)
+            body = self._json_body()
+            name = str(body.get("name") or "").strip()
+            self._check_drill_name(name, dbname)
+            try:
+                size = int(body.get("size"))
+            except (TypeError, ValueError):
+                raise SalvorError(422, "bad_args", "size (bytes) is required") from None
+            if size <= 0:
+                raise SalvorError(422, "bad_args", "size must be positive")
+            lock = DbLock(name)
+            if not lock.acquire():
+                raise SalvorError(409, "busy", "This drill database is busy")
+            try:
+                self._drill_claim(dbname, registry, name, size)
+                open(os.path.join(tools.drill_dir(dbname, name), "archive"), "wb").close()
+                tools.write_state(tools.drill_dir(dbname, name), state="uploading", size=size)
+            finally:
+                lock.release()
+            self._audit(dbname, "drill/start", 201, detail="name=%s size=%s" % (name, size), nbytes=size)
+            return _json({"ok": True, "db": name, "size": size, "chunk_max": UPLOAD_CHUNK_MAX}, 201)
+        return self._handle("drill/start", run)
+
+    @http.route("/salvor/v1/drill/upload", **UPLOAD_OPTS)
+    def drill_upload(self, **kw):
+        def run(dbname, registry, settings):
+            self._require_drills(settings)
+            headers = request.httprequest.headers
+            name = (headers.get("X-Salvor-Drill") or "").strip()
+            self._check_drill_name(name, dbname)
+            rec_id, rstate = self._drill_owned(registry, name)
+            path = tools.drill_dir(dbname, name)
+            archive = os.path.join(path, "archive")
+            if rstate != "uploading" or not os.path.exists(archive):
+                raise SalvorError(409, "bad_state", "This drill is not accepting uploads")
+            try:
+                offset = int(headers.get("X-Salvor-Offset", ""))
+            except ValueError:
+                raise SalvorError(422, "bad_args", "X-Salvor-Offset is required") from None
+            declared = int(tools.read_state(path).get("size") or 0)
+            length = request.httprequest.content_length
+            if length is None or length > UPLOAD_CHUNK_MAX or offset < 0 or offset + length > declared:
+                raise SalvorError(422, "bad_args", "Chunk missing, too large, or past the declared size")
+            lock = DbLock(name)
+            if not lock.acquire():
+                raise SalvorError(409, "busy", "Another upload to this drill is running")
+            try:
+                have = os.path.getsize(archive)
+                if offset > have:
+                    raise SalvorError(409, "offset_mismatch", "Upload must continue at the received size", size=have)
+                # Odoo's request facade hides werkzeug's .stream; read the raw body in
+                # chunks from the wrapped request instead of get_data() (no RAM copy).
+                raw = getattr(request.httprequest, "_HTTPRequest__wrapped", request.httprequest)
+                stream = raw.stream
+                with open(archive, "r+b") as fh:
+                    fh.truncate(offset)  # a resumed chunk replaces what a broken one left
+                    fh.seek(offset)
+                    left = length
+                    while left > 0:
+                        chunk = stream.read(min(left, 1024 * 1024))
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        left -= len(chunk)
+                size = os.path.getsize(archive)
+            finally:
+                lock.release()
+            if size != offset + length:
+                raise SalvorError(422, "short_body", "The chunk body ended early", size=size)
+            return _json({"ok": True, "size": size})
+        return self._handle("drill/upload", run)
+
+    @http.route("/salvor/v1/drill/restore", **ROUTE_OPTS)
+    def drill_restore(self, **kw):
+        def run(dbname, registry, settings):
+            self._require_drills(settings)
+            body = self._json_body()
+            name = str(body.get("name") or "").strip()
+            self._check_drill_name(name, dbname)
+            sha = str(body.get("sha256") or "").lower()
+            if not SHA_RE.match(sha):
+                raise SalvorError(422, "bad_args", "sha256 is required")
+            rec_id, rstate = self._drill_owned(registry, name)
+            path = tools.drill_dir(dbname, name)
+            if rstate != "uploading":
+                raise SalvorError(409, "bad_state", "This drill was already restored or failed")
+            archive = os.path.join(path, "archive")
+            declared = int(tools.read_state(path).get("size") or 0)
+            if not os.path.exists(archive) or os.path.getsize(archive) != declared:
+                raise SalvorError(409, "incomplete_upload", "Upload is incomplete",
+                                  size=os.path.getsize(archive) if os.path.exists(archive) else 0)
+            if tools.file_sha256(archive) != sha:
+                raise SalvorError(422, "sha256_mismatch", "The uploaded archive does not match its sha256")
+            lock = DbLock(dbname)
+            if not lock.acquire():
+                raise SalvorError(409, "busy", "Another backup or restore is running for this database")
+            try:
+                tools.spawn_runner(path, self._restore_spec(name), lock=lock)
+            finally:
+                lock.release()
+            self._drill_write(registry, rec_id, state="restoring")
+            self._audit(dbname, "drill/restore", 202, detail="into=%s" % name, nbytes=declared)
+            return _json({"ok": True, "db": name, "state": "running"}, 202)
+        return self._handle("drill/restore", run)
+
+    @http.route("/salvor/v1/drill/status", **ROUTE_OPTS)
+    def drill_status(self, **kw):
+        def run(dbname, registry, settings):
+            self._require_drills(settings)
+            name = str(self._json_body().get("name") or "").strip()
+            self._check_drill_name(name, dbname)
+            rec_id, rstate = self._drill_owned(registry, name)
+            path = tools.drill_dir(dbname, name)
+            state = self._sync_drill(registry, rec_id, path) if rstate == "restoring" else tools.read_state(path)
+            out = {
+                "db": name,
+                "state": {"done": "done", "failed": "failed"}.get(state.get("state"),
+                                                                  "uploading" if rstate == "uploading" else "running"),
+                "phase": state.get("phase"),
+                "error": state.get("error"),
+                "neutralization": state.get("neutralization"),
+            }
+            if rstate in ("restored", "failed"):
+                out["state"] = "done" if rstate == "restored" else "failed"
+            if out["state"] in ("done", "failed") and not state.get("audited"):
+                tools.write_state(path, audited=True)
+                self._audit(dbname, "drill/job", 200 if out["state"] == "done" else 500,
+                            "ok" if out["state"] == "done" else "restore_failed",
+                            detail="%s %s" % (name, out["error"] or "neutralized"))
+            return _json(out)
+        return self._handle("drill/status", run)
+
+    # ---------------------------------------------------- v1 restore / drop
+    @http.route("/salvor/v1/restore", **RESTORE_OPTS)
     def restore(self, **kw):
         def run(dbname, registry, settings):
-            if not settings["drill_enabled"]:
-                raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
+            self._require_drills(settings)
+            size = request.httprequest.content_length or 0
+            # check the disk BEFORE werkzeug spools the upload anywhere
+            need = int(size * DRILL_DISK_FACTOR)
+            free = tools.disk_free(config["data_dir"])
+            if free < need:
+                raise SalvorError(507, "insufficient_disk",
+                                  "Drill refused: %d MiB free in the Odoo data_dir, %d MiB needed (2.5x the archive)"
+                                  % (free // 2 ** 20, need // 2 ** 20), free_bytes=int(free), required_bytes=need)
             name = (request.httprequest.form.get("name") or "").strip()
             upload = request.httprequest.files.get("backup_file")
             self._check_drill_name(name, dbname)
             if upload is None:
                 raise SalvorError(422, "bad_args", "Missing backup_file")
-            if dbcompat.pg_db_exists(name):
-                raise SalvorError(422, "bad_args", "Drill database already exists")
             lock = DbLock(dbname)
             if not lock.acquire():
                 raise SalvorError(409, "busy", "Another backup or restore is running for this database")
-            tmp = None
             try:
-                fd, tmp = tempfile.mkstemp(prefix="salvor_restore_", suffix=".bin")
+                rec_id, path = self._drill_claim(dbname, registry, name, size)
+                archive = os.path.join(path, "archive")
+                fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "wb") as fh:
                     upload.save(fh)
-                try:
-                    dbcompat.restore_drill(name, tmp)
-                except Exception as e:  # noqa: BLE001
-                    _logger.warning("salvor_connector restore into %s failed: %s", name, e)
-                    if dbcompat.pg_db_exists(name):  # created by this call (checked above)
-                        try:
-                            self._drop(name)
-                        except Exception:  # noqa: BLE001
-                            _logger.exception("salvor_connector: cleanup of %s failed", name)
-                    raise SalvorError(422, "restore_failed", "Restore failed") from None
+                self._drill_write(registry, rec_id, state="restoring")
+                pid = tools.spawn_runner(path, self._restore_spec(name))
+                while tools.pid_alive(pid):
+                    time.sleep(0.5)
+                state = self._sync_drill(registry, rec_id, path)
             finally:
                 lock.release()
-                if tmp and os.path.exists(tmp):
-                    os.unlink(tmp)
-            self._audit(dbname, "restore", 200, "into=%s" % name)
+            if state.get("state") != "done":
+                _logger.warning("salvor_connector restore into %s failed: %s", name, state.get("error"))
+                try:
+                    self._drop(registry, dbname, name, rec_id)
+                except Exception:  # noqa: BLE001
+                    _logger.exception("salvor_connector: cleanup of %s failed", name)
+                raise SalvorError(422, "restore_failed", "Restore failed")
+            self._audit(dbname, "restore", 200, detail="into=%s (v1)" % name, nbytes=size)
             return _json({"ok": True, "db": name})
         return self._handle("restore", run)
 
     @http.route("/salvor/v1/drop", **ROUTE_OPTS)
     def drop(self, **kw):
         def run(dbname, registry, settings):
-            if not settings["drill_enabled"]:
-                raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
+            self._require_drills(settings)
             name = str(self._json_body().get("name") or "").strip()
             self._check_drill_name(name, dbname)
-            if not dbcompat.pg_db_exists(name):
-                raise SalvorError(404, "db_not_found", "Drill database not found")
-            self._drop(name)
-            self._audit(dbname, "drop", 200, "dropped=%s" % name)
+            rec_id, rstate = self._drill_owned(registry, name)
+            self._drop(registry, dbname, name, rec_id)
+            self._audit(dbname, "drop", 200, detail="dropped=%s" % name)
             return _json({"ok": True, "db": name})
         return self._handle("drop", run)
 
     # ------------------------------------------------------------- helpers
     @staticmethod
+    def _require_drills(settings):
+        if not settings["drill_enabled"]:
+            raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
+
+    @staticmethod
     def _check_drill_name(name, live_db):
         if not DRILL_RE.match(name or "") or name == live_db:
             raise SalvorError(422, "bad_args", "name must match ^salvor_drill_[a-z0-9_]{1,40}$")
 
-    @staticmethod
-    def _drop(name):
+    def _drop(self, registry, dbname, name, rec_id):
+        """Drop an OWNED drill db under its per-db lock: stop a running restore,
+        drop the database and its filestore, remove the upload, mark dropped."""
         assert DRILL_RE.match(name)
-        if name == getattr(request, "db", None):
+        if name in (dbname, getattr(request, "db", None)):
             raise SalvorError(422, "bad_args", "Refusing to drop the current database")
-        dbcompat.drop_drill(name)
+        path = tools.drill_dir(dbname, name)
+        state = tools.read_state(path)
+        if state.get("state") in ("starting", "running"):
+            tools.terminate(state.get("pid"))
+        lock = DbLock(name)
+        deadline = time.time() + 30
+        while not lock.acquire():
+            if time.time() > deadline:
+                raise SalvorError(409, "busy", "This drill database is busy")
+            time.sleep(0.5)
+        try:
+            if dbcompat.pg_db_exists(name):
+                dbcompat.drop_drill(name)
+            tools.remove_tree(path)
+            self._drill_write(registry, rec_id, state="dropped", dropped_at=fields.Datetime.now())
+        finally:
+            lock.release()
