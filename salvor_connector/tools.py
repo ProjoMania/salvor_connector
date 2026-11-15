@@ -25,7 +25,6 @@ PROTOCOLS_SUPPORTED = [1, 2]
 # made safe by filtering it; connector drills stay off until an isolated-role design ships.
 CAPABILITIES = ["backup_job", "range_download", "audit_log", "drill_cleanup"]
 JOB_TTL_HOURS_DEFAULT = 6
-DRILL_DISK_FACTOR = 2.5
 BACKUP_DISK_MARGIN = 256 * 1024 * 1024
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 DRILL_RE = re.compile(r"^salvor_drill_[a-z0-9_]{1,40}$")
@@ -294,24 +293,6 @@ def live_state(path):
     return state
 
 
-def neutralize_sql_map():
-    """module -> path of its data/neutralize.sql, over every addons path
-    (the same files odoo.modules.neutralize runs, resolved here because the
-    detached runner does not import Odoo)."""
-    import odoo.addons
-    found = {}
-    for base in odoo.addons.__path__:
-        try:
-            names = os.listdir(base)
-        except OSError:
-            continue
-        for module in names:
-            path = os.path.join(base, module, "data", "neutralize.sql")
-            if module not in found and os.path.isfile(path):
-                found[module] = path
-    return found
-
-
 def spawn_runner(path, spec, lock=None):
     """Write job.json and start jobrunner.py detached (own session).
 
@@ -500,49 +481,8 @@ def iter_file(path, start, length):
             yield chunk
 
 
-def file_sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def system_db():
     return config.get("db_system") or "postgres"
-
-
-class DatabaseExistsConflict(Exception):
-    pass
-
-
-def create_drill_db(name):
-    """CREATE DATABASE as the one atomic claim on a drill name: PostgreSQL
-    refuses a second CREATE of the same name, so two racing restores can never
-    both 'own' it (no exists-then-create window)."""
-    from contextlib import closing
-
-    import psycopg2
-    from psycopg2 import sql
-
-    import odoo
-
-    if not DRILL_RE.match(name):
-        raise ValueError("bad drill name")
-    template = config.get("db_template") or "template0"
-    with closing(odoo.sql_db.db_connect(system_db()).cursor()) as cr:
-        cr.rollback()
-        cr._cnx.autocommit = True
-        query = sql.SQL("CREATE DATABASE {} ENCODING 'unicode' {} TEMPLATE {}").format(
-            sql.Identifier(name),
-            sql.SQL("LC_COLLATE 'C'") if template == "template0" else sql.SQL(""),
-            sql.Identifier(template))
-        try:
-            cr.execute(query, log_exceptions=False)
-        except psycopg2.errors.DuplicateDatabase:
-            raise DatabaseExistsConflict(name) from None
-        cr.execute("SELECT oid FROM pg_database WHERE datname = %s", (name,))
-        return str(cr.fetchone()[0])
 
 
 def db_oid(name):
