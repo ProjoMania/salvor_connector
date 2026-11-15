@@ -492,3 +492,46 @@ class TestSalvorConnector(HttpCase):
         finally:
             proc.kill()
             proc.wait()
+
+    def test_restore_preamble_filter(self):
+        from .. import jobrunner
+        sql = (b"SET statement_timeout = 0;\nSET transaction_timeout = 0;\nSET lock_timeout = 0;\n"
+               b"CREATE TABLE t (x text);\nCOPY t (x) FROM stdin;\nSET transaction_timeout = 0;\n\\.\n")
+        self.assertEqual(jobrunner.unsupported_settings(160004), {b"transaction_timeout"})
+        self.assertEqual(jobrunner.unsupported_settings(170000), set())
+        out = b"".join(jobrunner.filter_preamble(iter([sql[:20], sql[20:]]), {b"transaction_timeout"}))
+        self.assertNotIn(b"SET transaction_timeout = 0;\nSET lock_timeout", out)
+        self.assertIn(b"SET lock_timeout = 0;", out)
+        self.assertIn(b"CREATE TABLE t", out)
+        self.assertEqual(b"".join(jobrunner.filter_preamble(iter([sql]), set())), sql)
+        # beyond the preamble window the stream is passed through byte for byte
+        big = b"SET transaction_timeout = 0;\n" + b"x" * (jobrunner.PREAMBLE_BYTES + 10) + b"\nSET transaction_timeout = 0;\n"
+        out = b"".join(jobrunner.filter_preamble(iter([big[i:i + 4096] for i in range(0, len(big), 4096)]),
+                                                 {b"transaction_timeout"}))
+        self.assertFalse(out.startswith(b"SET transaction_timeout"))
+        self.assertTrue(out.endswith(b"\nSET transaction_timeout = 0;\n"))
+
+    def test_drill_reports_the_real_psql_error(self):
+        """psql stops on the first error (ON_ERROR_STOP): the job reports psql's
+        message, not the BrokenPipeError of the writer."""
+        self.cfg.drill_enabled = True
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("dump.sql", "SELECT * FROM salvor_no_such_table;\n" + "SELECT 1;\n" * 200000)
+            zf.writestr("manifest.json", "{}")
+        archive = buf.getvalue()
+        name = drill_name("ut_err")
+        self.addCleanup(self._force_drop, name)
+        self.assertEqual(self._post("drill/start", json={"name": name, "size": len(archive)}).status_code, 201)
+        self._upload(name, 0, archive)
+        resp = self._post("drill/restore", json={"name": name, "sha256": hashlib.sha256(archive).hexdigest()})
+        self.assertEqual(resp.status_code, 202)
+        deadline = time.time() + 120
+        while True:
+            ds = self._post("drill/status", json={"name": name}).json()
+            if ds["state"] in ("done", "failed") or time.time() > deadline:
+                break
+            time.sleep(0.5)
+        self.assertEqual(ds["state"], "failed")
+        self.assertIn("salvor_no_such_table", ds["error"])
+        self.assertNotIn("Broken pipe", ds["error"])
