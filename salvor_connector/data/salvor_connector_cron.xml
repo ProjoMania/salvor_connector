@@ -9,6 +9,4 @@
         <field name="interval_type">hours</field>
         <field name="active" eval="True"/>
     </record>
-    <!-- 2.0.2: connector drills are disabled; switch any stored flag off on every update -->
-    <function model="salvor.connector.config" name="_force_drills_off"/>
 </odoo>

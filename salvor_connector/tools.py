@@ -21,8 +21,7 @@ from odoo.tools.misc import exec_pg_environ, find_pg_tool
 # advertised through PROTOCOLS_SUPPORTED + CAPABILITIES. v1 endpoints stay served.
 PROTOCOL_VERSION = 1
 PROTOCOLS_SUPPORTED = [1, 2]
-# 2.0.2: no drill capability. Restoring an archive as the role that owns production cannot be
-# made safe by filtering it; connector drills stay off until an isolated-role design ships.
+# No drill capability: the connector has no restore code (removed in 2.0.4).
 CAPABILITIES = ["backup_job", "range_download", "audit_log", "drill_cleanup"]
 JOB_TTL_HOURS_DEFAULT = 6
 BACKUP_DISK_MARGIN = 256 * 1024 * 1024
