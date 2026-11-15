@@ -19,6 +19,12 @@ from .. import tools
 from ..tools import DbLock, sha256_hex
 
 TOKEN = "t" * 20 + "0123456789abcdefghijklmnopqrstuv"
+# drill dbs are cluster-wide: a per-run suffix lets 17/18/19/20 run in parallel on one server
+RUN = "%s_%s" % (__import__("odoo").release.version_info[0], __import__("secrets").token_hex(3))
+
+
+def drill_name(tag):
+    return "salvor_drill_%s_%s" % (tag, RUN)
 
 
 @tagged("post_install", "-at_install")
@@ -114,7 +120,7 @@ class TestSalvorConnector(HttpCase):
         resp = self._post("info", json={})
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         data = resp.json()
-        self.assertEqual(data["protocol"], 2)
+        self.assertEqual(data["protocol"], 1)  # baseline: deployed Salvor (checks == 1) keeps working
         self.assertEqual(data["protocols"], [1, 2])
         self.assertIn("backup_job", data["capabilities"])
         self.assertEqual(data["db"], self.dbname)
@@ -282,7 +288,7 @@ class TestSalvorConnector(HttpCase):
         self.cfg.drill_enabled = True
         job_id, st = self._run_job("dump")
         archive = self._post("backup/download", json={"job_id": job_id}).content
-        name = "salvor_drill_ut_v2"
+        name = drill_name("ut_v2")
         self._force_drop(name)
         self.addCleanup(self._force_drop, name)
         resp = self._post("drill/start", json={"name": name, "size": len(archive)})
@@ -333,7 +339,7 @@ class TestSalvorConnector(HttpCase):
     def test_drill_v1_restore_owned_and_neutralized(self):
         self.cfg.drill_enabled = True
         archive = self._post("backup", json={"format": "dump"}).content
-        name = "salvor_drill_ut_v1"
+        name = drill_name("ut_v1")
         self._force_drop(name)
         self.addCleanup(self._force_drop, name)
         resp = self.opener.post(self.base_url() + "/salvor/v1/restore",
@@ -348,15 +354,15 @@ class TestSalvorConnector(HttpCase):
     def test_drill_disk_precheck(self):
         self.cfg.drill_enabled = True
         with patch.object(tools, "disk_free", return_value=2 * 1024 ** 3):
-            resp = self._post("drill/start", json={"name": "salvor_drill_ut_disk", "size": 1024 ** 3})
+            resp = self._post("drill/start", json={"name": drill_name("ut_disk"), "size": 1024 ** 3})
             self._assert_error(resp, 507, "insufficient_disk")
-        self.assertFalse(self._drill_db_exists("salvor_drill_ut_disk"))
+        self.assertFalse(self._drill_db_exists(drill_name("ut_disk")))
 
     # --- scope proof ----------------------------------------------------------
     def test_scope_foreign_and_non_drill_dbs(self):
         """The backup token can't create/restore/drop anything but its OWN drills."""
         self.cfg.drill_enabled = True
-        foreign = "salvor_drill_ut_foreign"  # e.g. another paired database's drill
+        foreign = drill_name("ut_foreign")  # e.g. another paired database's drill
         if not dbcompat.pg_db_exists(foreign):
             subprocess.run([find_pg_tool("createdb"), foreign], env=exec_pg_environ(), check=True)
         self.addCleanup(self._force_drop, foreign)
@@ -435,7 +441,6 @@ class TestSalvorConnector(HttpCase):
 
     def test_refusal_rows_are_rate_limited(self):
         from ..controllers import main as ctl
-        ctl._REFUSALS.clear()
         log = self.env["salvor.connector.log"]
         for _i in range(ctl.REFUSALS_PER_MINUTE + 15):
             self._post("info", token="nope")
@@ -448,3 +453,42 @@ class TestSalvorConnector(HttpCase):
         self.assertTrue(os.path.isdir(path))
         self.cfg.action_disconnect()
         self.assertFalse(os.path.isdir(path))
+
+    def test_drill_ownership_is_by_oid_not_name(self):
+        """A drill name freed outside the connector and re-created by someone else
+        (e.g. another paired db) is not ours any more: drop refuses it."""
+        self.cfg.drill_enabled = True
+        name = drill_name("ut_oid")
+        self.addCleanup(self._force_drop, name)
+        self.assertEqual(self._post("drill/start", json={"name": name, "size": 10}).status_code, 201)
+        dbcompat.drop_drill(name)  # removed outside the connector
+        subprocess.run([find_pg_tool("createdb"), name], env=exec_pg_environ(), check=True)  # someone else's
+        self._assert_error(self._post("drop", json={"name": name}), 404, "db_not_found")
+        self.assertTrue(dbcompat.pg_db_exists(name))
+        self.env.invalidate_all()
+        rec = self.env["salvor.connector.drill"].search([("name", "=", name)])
+        self.assertEqual(rec.state, "dropped")
+
+    def test_uninstall_hook_scope(self):
+        from .. import uninstall_hook
+        other = DbLock("some_other_db_ws3")
+        self.assertTrue(other.acquire())
+        other.release()
+        self.cfg.drill_enabled = True
+        name = drill_name("ut_unin")
+        self.addCleanup(self._force_drop, name)
+        self.assertEqual(self._post("drill/start", json={"name": name, "size": 10}).status_code, 201)
+        uninstall_hook(self.env)
+        self.assertTrue(os.path.exists(other.path))  # other databases' locks untouched
+        self.assertFalse(dbcompat.pg_db_exists(name))  # our drill dropped
+
+    def test_terminate_never_signals_a_foreign_pid(self):
+        proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        try:
+            start = tools.proc_start_time(proc.pid)
+            tools.terminate(proc.pid, timeout=1, pid_start=start + 1)  # recycled pid
+            tools.terminate(proc.pid, timeout=1, pid_start=start)  # not a jobrunner
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.kill()
+            proc.wait()

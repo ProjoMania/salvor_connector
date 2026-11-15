@@ -18,6 +18,9 @@ class SalvorConnectorDrill(models.Model):
         ("failed", "Failed"),
         ("dropped", "Dropped"),
     ], required=True, default="created", readonly=True)
+    pg_oid = fields.Char(string="PostgreSQL OID", readonly=True,
+                         help="Identity of the database this connector created: drop/restore "
+                              "act only if a database with this name AND this oid exists.")
     archive_bytes = fields.Float(readonly=True, digits=(16, 0))
     neutralization = fields.Char(readonly=True)
     error = fields.Char(readonly=True)
