@@ -37,7 +37,6 @@ class TestSalvorConnector(HttpCase):
             "token_hash": sha256_hex(TOKEN),
             "allowed_ips": "127.0.0.1\n::1",
             "enabled": True,
-            "drill_enabled": False,
         })
         self.authenticate(None, None)  # session bound to the test db (routing only)
         self.dbname = self.env.cr.dbname
@@ -104,20 +103,34 @@ class TestSalvorConnector(HttpCase):
 
     def test_drill_endpoints_disabled(self):
         """2.0.4: the restore code is gone; every drill route is a 410 stub that
-        touches neither the disk nor PostgreSQL, with or without a token."""
+        touches neither the disk nor PostgreSQL. 2.0.5: the stubs check token, IP
+        and enabled first (same 401/403 as any route, logged) and refuse bodies
+        over 1 KiB."""
         from .. import jobrunner
         self.assertFalse(hasattr(jobrunner, "run_restore") or hasattr(jobrunner, "PsqlGuard"))
+        self.assertNotIn("drill_enabled", self.cfg._fields)
+        log = self.env["salvor.connector.log"].sudo()
         drills_root = os.path.join(tools.config["data_dir"], "salvor_connector", "drills", self.dbname)
         before = os.path.exists(drills_root)
-        for enabled in (False, True):
-            self.cfg.drill_enabled = enabled
-            for ep, body in (("drill/start", {"name": "salvor_drill_a", "size": 10}),
-                             ("drill/restore", {"name": "salvor_drill_a", "sha256": "0" * 64}),
-                             ("drill/status", {"name": "salvor_drill_a"})):
-                self._assert_error(self._post(ep, json=body), 410, "drills_removed")
-                self._assert_error(self._post(ep, json=body, token=None), 410, "drills_removed")
-            self._assert_error(self._upload("salvor_drill_a", 0, b"x", expect=410), 410, "drills_removed")
-            self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "drills_removed")
+        stubs = (("drill/start", {"name": "salvor_drill_a", "size": 10}),
+                 ("drill/restore", {"name": "salvor_drill_a", "sha256": "0" * 64}),
+                 ("drill/status", {"name": "salvor_drill_a"}),
+                 ("drill/upload", {}), ("restore", {}))
+        for ep, body in stubs:
+            self._assert_error(self._post(ep, json=body), 410, "drills_removed")
+            self._assert_error(self._post(ep, json=body, token=None), 401, "unauthorized")
+            self._assert_error(self._post(ep, json=body, token="nope"), 401, "unauthorized")
+        self._assert_error(self._upload("salvor_drill_a", 0, b"x", expect=410), 410, "drills_removed")
+        self._assert_error(self._v1_restore("salvor_drill_a", b"PGDMP"), 410, "drills_removed")
+        self.env.invalidate_all()
+        for ep, _body in stubs:
+            self.assertTrue(log.search_count([("endpoint", "=", ep), ("http_status", "=", 410)]), ep)
+            self.assertTrue(log.search_count([("endpoint", "=", ep), ("http_status", "=", 401)]), ep)
+        self.cfg.allowed_ips = "10.9.9.9"
+        self._assert_error(self._post("drill/start", json={}), 403, "ip_forbidden")
+        self.cfg.write({"allowed_ips": "127.0.0.1\n::1", "enabled": False})
+        self._assert_error(self._post("restore", json={}), 403, "disabled")
+        self.cfg.enabled = True
         self.assertFalse(dbcompat.pg_db_exists("salvor_drill_a"))
         self.assertEqual(os.path.exists(drills_root), before)
         self.assertFalse(self.env["salvor.connector.drill"].search([("name", "=", "salvor_drill_a")]))
@@ -125,14 +138,12 @@ class TestSalvorConnector(HttpCase):
         self.assertFalse(info["drill_enabled"])
         self.assertNotIn("upload_chunk_max", info)
         self.assertFalse([c for c in info["capabilities"] if c.startswith("drill_") and c != "drill_cleanup"])
-        self.cfg._force_drills_off()
-        self.assertFalse(self.cfg.drill_enabled)
-        # the disabled upload route rejects a body before Odoo parses it
-        resp = self.opener.post(self.base_url() + "/salvor/v1/drill/upload", data=b"x" * 4096, timeout=60,
-                                headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN,
-                                         "X-Salvor-Drill": "salvor_drill_a", "X-Salvor-Offset": "0",
-                                         "Content-Type": "application/octet-stream"})
-        self.assertEqual(resp.status_code, 413, resp.text[:200])
+        # every stub rejects a body over 1 KiB before Odoo parses it
+        for ep, _body in stubs:
+            resp = self.opener.post(self.base_url() + "/salvor/v1/" + ep, data=b"x" * 4096, timeout=60,
+                                    headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN,
+                                             "Content-Type": "application/octet-stream"})
+            self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
 
     def test_drop_leftovers_needs_admin(self):
         user = self.env["res.users"].create({"name": "salvor ut user", "login": "salvor_ut_user_%s" % RUN,
@@ -392,7 +403,6 @@ class TestSalvorConnector(HttpCase):
 
     def test_neutralize_unpairs_copy(self):
         from odoo.modules.neutralize import neutralize_database
-        self.cfg.drill_enabled = True
         self.env.flush_all()
         neutralize_database(self.env.cr)
         self.env.invalidate_all()
@@ -419,7 +429,6 @@ class TestSalvorConnector(HttpCase):
     def test_drill_ownership_is_by_oid_not_name(self):
         """A drill name freed outside the connector and re-created by someone else
         (e.g. another paired db) is not ours any more: drop refuses it."""
-        self.cfg.drill_enabled = True
         name = drill_name("ut_oid")
         self.addCleanup(self._force_drop, name)
         self._owned_drill(name)
@@ -436,7 +445,6 @@ class TestSalvorConnector(HttpCase):
         other = DbLock("some_other_db_ws3")
         self.assertTrue(other.acquire())
         other.release()
-        self.cfg.drill_enabled = True
         name = drill_name("ut_unin")
         self.addCleanup(self._force_drop, name)
         self._owned_drill(name)
@@ -456,7 +464,6 @@ class TestSalvorConnector(HttpCase):
             proc.wait()
 
     def test_drill_drop_button_and_stale_gc(self):
-        self.cfg.drill_enabled = True
         name = drill_name("ut_btn")
         self._force_drop(name)
         self.addCleanup(self._force_drop, name)
@@ -480,7 +487,6 @@ class TestSalvorConnector(HttpCase):
         self.cfg.action_disconnect()
         self.assertFalse(self._drill_db_exists(name2))
         self.assertFalse(self.cfg.allowed_ips)
-        self.assertFalse(self.cfg.drill_enabled)
         self.assertFalse(os.path.isdir(os.path.dirname(tools.drill_dir(self.dbname, name2))))
 
     def test_backup_jobs_are_capped(self):

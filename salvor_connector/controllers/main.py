@@ -16,7 +16,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import secrets
 import time
 
@@ -40,10 +39,9 @@ CONFIG_MODEL = "salvor.connector.config"
 LOG_MODEL = "salvor.connector.log"
 DRILL_MODEL = "salvor.connector.drill"
 MAX_STORED_JOBS = 2  # backup archives kept per database, the new one included
-SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
-# drills are disabled (2.0.2): refuse any upload body before Odoo parses or spools it
-UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=1024)
+# removed drill routes (410 stubs): refuse any body over 1 KiB before Odoo parses or spools it
+STUB_OPTS = dict(ROUTE_OPTS, max_content_length=1024)
 
 
 class SalvorError(Exception):
@@ -114,7 +112,6 @@ class SalvorConnectorController(http.Controller):
                         "token_hash": rec.token_hash or "",
                         "allowed_ips": rec.allowed_ips or "",
                         "enabled": rec.enabled,
-                        "drill_enabled": rec.drill_enabled,
                         "module_version": rec._module_version(),
                     }
         stored = (settings or {}).get("token_hash") or "0" * 64  # same compare cost on a miss
@@ -209,7 +206,7 @@ class SalvorConnectorController(http.Controller):
                 "db": dbname,
                 "db_size_bytes": int(db_size),
                 "filestore_bytes_estimate": int(fs_size),
-                "drill_enabled": False,  # 2.0.2: connector drills are disabled
+                "drill_enabled": False,  # protocol field: the connector has no restore drills
                 "protocols": PROTOCOLS_SUPPORTED,
                 "capabilities": CAPABILITIES,
                 "data_dir_free_bytes": int(tools.disk_free(config["data_dir"])),
@@ -224,7 +221,7 @@ class SalvorConnectorController(http.Controller):
                 raise SalvorError(422, "bad_args", "format must be 'dump' or 'zip'")
             lock = DbLock(dbname)
             if not lock.acquire():
-                raise SalvorError(409, "busy", "Another backup or restore is running for this database")
+                raise SalvorError(409, "busy", "Another backup is running for this database")
             try:
                 if fmt == "zip":
                     with registry.cursor() as cr:
@@ -304,7 +301,7 @@ class SalvorConnectorController(http.Controller):
                                   free_bytes=int(free), required_bytes=int(estimate + BACKUP_DISK_MARGIN))
             lock = DbLock(dbname)
             if not lock.acquire():
-                raise SalvorError(409, "busy", "Another backup or restore is running for this database")
+                raise SalvorError(409, "busy", "Another backup is running for this database")
             try:
                 tools.trim_jobs(dbname, MAX_STORED_JOBS - 1)
                 job_id = secrets.token_hex(16)
@@ -448,36 +445,39 @@ class SalvorConnectorController(http.Controller):
 
     # Removed in 2.0.4: the restore code path (drill restores through psql) is
     # gone from the module. The routes stay as stubs so an old Salvor worker gets
-    # a clear answer; they never read the body (upload keeps a 1 KiB limit: 413).
-    @staticmethod
-    def _drills_removed():
-        return _json({"error": "drills_removed",
-                      "message": "Restore drills were removed from the Salvor Connector in 2.0.4"}, 410)
+    # a clear answer. They check token, IP and enabled like every other route (an
+    # anonymous caller gets the same 401/403, logged in the Pull Log), never read
+    # the body, and refuse any body over 1 KiB with 413.
+    def _drills_removed(self, endpoint):
+        def run(dbname, registry, settings):
+            raise SalvorError(410, "drills_removed",
+                              "Restore drills were removed from the Salvor Connector in 2.0.4")
+        return self._handle(endpoint, run)
 
-    @http.route("/salvor/v1/drill/start", **ROUTE_OPTS)
+    @http.route("/salvor/v1/drill/start", **STUB_OPTS)
     def drill_start(self, **kw):
-        return self._drills_removed()
+        return self._drills_removed("drill/start")
 
-    @http.route("/salvor/v1/drill/upload", **UPLOAD_OPTS)
+    @http.route("/salvor/v1/drill/upload", **STUB_OPTS)
     def drill_upload(self, **kw):
-        return self._drills_removed()
+        return self._drills_removed("drill/upload")
 
-    @http.route("/salvor/v1/drill/restore", **ROUTE_OPTS)
+    @http.route("/salvor/v1/drill/restore", **STUB_OPTS)
     def drill_restore(self, **kw):
-        return self._drills_removed()
+        return self._drills_removed("drill/restore")
 
-    @http.route("/salvor/v1/drill/status", **ROUTE_OPTS)
+    @http.route("/salvor/v1/drill/status", **STUB_OPTS)
     def drill_status(self, **kw):
-        return self._drills_removed()
+        return self._drills_removed("drill/status")
 
-    @http.route("/salvor/v1/restore", **ROUTE_OPTS)
+    @http.route("/salvor/v1/restore", **STUB_OPTS)
     def restore(self, **kw):
-        return self._drills_removed()
+        return self._drills_removed("restore")
 
     @http.route("/salvor/v1/drop", **ROUTE_OPTS)
     def drop(self, **kw):
         def run(dbname, registry, settings):
-            # kept in 2.0.2 so leftovers of 2.0.0/2.0.1 drills can still be removed (oid-checked)
+            # removes leftover drill databases of 2.0.0/2.0.1 (oid-checked)
             name = str(self._json_body().get("name") or "").strip()
             self._check_drill_name(name, dbname)
             rec_id, rstate = self._drill_owned(registry, name)
@@ -493,8 +493,8 @@ class SalvorConnectorController(http.Controller):
             raise SalvorError(422, "bad_args", "name must match ^salvor_drill_[a-z0-9_]{1,40}$")
 
     def _drop(self, registry, dbname, name, rec_id):
-        """Drop an OWNED drill db under its per-db lock: stop a running restore,
-        drop the database and its filestore, remove the upload, mark dropped."""
+        """Drop an OWNED drill db under its per-db lock: stop a leftover runner,
+        drop the database and its filestore, remove its upload directory, mark dropped."""
         assert DRILL_RE.match(name)
         if name in (dbname, getattr(request, "db", None)):
             raise SalvorError(422, "bad_args", "Refusing to drop the current database")

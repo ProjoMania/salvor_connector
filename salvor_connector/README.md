@@ -16,7 +16,8 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
 - **Not affected:** 2.0.2 and 2.0.3: every drill route raises 410 before any work; the restore code is
   unreachable. **Fixed:** 2.0.4: the code is removed.
 - **Action:** pull your branch, **restart Odoo**, then upgrade the module (`-u salvor_connector` or
-  *Upgrade* in Apps). Until then keep *Allow restore drills* off. Details: `SECURITY.md`.
+  *Upgrade* in Apps). Until then keep *Allow restore drills* off. From 1.0.0, 2.0.0 or 2.0.1, pair
+  again after the upgrade (Salvor refuses those versions). Details: `SECURITY.md`.
 
 Salvor checks each archive's integrity (sha256); restore drills need a master-password or SSH
 connection. Leftover `salvor_drill_*` databases from 2.0.0/2.0.1 are still removed (see Security).
@@ -37,10 +38,10 @@ Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job use
 | `backup/status` | `{"job_id"}` | `{state, bytes, sha256 (when done), error}` |
 | `backup/download` | `{"job_id"}` (+ `Range`) | the archive, 200 or 206 (resumable) |
 | `backup/cleanup` | `{"job_id"}` | deletes the job file (otherwise removed by the hourly housekeeping once 6 h old) |
-| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **removed in 2.0.4**: 410 `drills_removed`, body not read (upload bodies over 1 KiB: 413) |
+| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **removed in 2.0.4**: after the usual token/IP/enabled checks, 410 `drills_removed`; body not read (any body over 1 KiB: 413) |
 | `drop` | `{"name"}` | drops a leftover drill db **this database created** (by oid) |
 | `backup` | v1 | streamed backup in one request, kept for older Salvor workers |
-| `restore` | v1 | 410 `drills_removed`, body not read |
+| `restore` | v1 | as the drill stubs: checks, then 410 `drills_removed` |
 
 Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
