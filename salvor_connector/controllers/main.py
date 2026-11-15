@@ -226,10 +226,10 @@ class SalvorConnectorController(http.Controller):
             if not settings["drill_enabled"]:
                 raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
             name = (request.httprequest.form.get("name") or "").strip()
-            upload = request.httprequest.files.get("file")
+            upload = request.httprequest.files.get("backup_file")
             self._check_drill_name(name, dbname)
             if upload is None:
-                raise SalvorError(422, "bad_args", "Missing file")
+                raise SalvorError(422, "bad_args", "Missing backup_file")
             if dbcompat.pg_db_exists(name):
                 raise SalvorError(422, "bad_args", "Drill database already exists")
             lock = DbLock(dbname)
@@ -261,6 +261,8 @@ class SalvorConnectorController(http.Controller):
     @http.route("/salvor/v1/drop", **ROUTE_OPTS)
     def drop(self, **kw):
         def run(dbname, registry, settings):
+            if not settings["drill_enabled"]:
+                raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
             name = str(self._json_body().get("name") or "").strip()
             self._check_drill_name(name, dbname)
             if not dbcompat.pg_db_exists(name):

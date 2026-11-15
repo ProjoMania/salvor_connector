@@ -16,8 +16,8 @@ Branches: `19.0`, `18.0`, `17.0` (and `16.0`, see its README note).
 |---|---|---|
 | `info` | – | JSON: protocol, versions, db size, filestore estimate, drill flag |
 | `backup` | `{"format": "dump"\|"zip"}` | streamed `application/octet-stream`, header `X-Salvor-Format` |
-| `restore` | multipart `file` + `name` | only when drills are enabled; new `salvor_drill_*` db only |
-| `drop` | `{"name"}` | drops a `salvor_drill_*` db only |
+| `restore` | multipart `backup_file` + `name` | only when drills are enabled; new `salvor_drill_*` db only |
+| `drop` | `{"name"}` | only when drills are enabled; drops a `salvor_drill_*` db only |
 
 Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
