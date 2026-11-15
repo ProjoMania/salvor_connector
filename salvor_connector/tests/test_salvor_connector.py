@@ -48,9 +48,9 @@ class TestSalvorConnector(HttpCase):
 
     # --- refusals ---------------------------------------------------------
     def test_missing_and_wrong_token(self):
-        self._assert_error(self._post("info", token=None), 401, "bad_token")
-        self._assert_error(self._post("info", token="nope"), 401, "bad_token")
-        self._assert_error(self._post("info", token=TOKEN + "x"), 401, "bad_token")
+        self._assert_error(self._post("info", token=None), 401, "unauthorized")
+        self._assert_error(self._post("info", token="nope"), 401, "unauthorized")
+        self._assert_error(self._post("info", token=TOKEN + "x"), 401, "unauthorized")
 
     def test_get_not_allowed(self):
         resp = self.opener.get(self.base_url() + "/salvor/v1/info",
@@ -65,16 +65,26 @@ class TestSalvorConnector(HttpCase):
 
     def test_not_paired(self):
         self.cfg.action_disconnect()
-        self._assert_error(self._post("info"), 401, "not_paired")
+        self._assert_error(self._post("info"), 401, "unauthorized")
 
     def test_disabled(self):
         self.cfg.enabled = False
         self._assert_error(self._post("info"), 403, "disabled")
 
     def test_unknown_db(self):
-        self._assert_error(self._post("info", db="no_such_db_salvor_x"), 404, "db_not_found")
-        self._assert_error(self._post("info", db="../etc/passwd"), 404, "db_not_found")
-        self._assert_error(self._post("info", db="-h"), 404, "db_not_found")
+        # no database-name oracle: unknown db, non-Odoo db, bad name, wrong token,
+        # wrong IP without token — all the same 401 body
+        bodies = set()
+        for db in ("no_such_db_salvor_x", "../etc/passwd", "-h", "postgres", self.dbname):
+            for tok in (None, "nope"):
+                resp = self._post("info", db=db, token=tok)
+                self.assertEqual(resp.status_code, 401, (db, tok))
+                bodies.add(resp.text)
+        self.cfg.allowed_ips = "10.9.9.9"
+        resp = self._post("info", token="nope")
+        self.assertEqual(resp.status_code, 401)
+        bodies.add(resp.text)
+        self.assertEqual(len(bodies), 1, bodies)
 
     def test_bad_drill_name(self):
         # drills disabled (default): restore and drop refused with 403
@@ -117,7 +127,7 @@ class TestSalvorConnector(HttpCase):
         self._post("info", token="nope")
         refused = self.env["salvor.connector.log"].search([("endpoint", "=", "info"), ("http_status", "=", 401)])
         self.assertTrue(refused)
-        self.assertEqual(refused[0].result, "bad_token")
+        self.assertEqual(refused[0].result, "unauthorized")
         logs = self.env["salvor.connector.log"].search([])
         blob = " ".join("%s %s %s" % (r.detail, r.result, r.endpoint) for r in logs)
         self.assertNotIn(TOKEN, blob)
@@ -375,10 +385,10 @@ class TestSalvorConnector(HttpCase):
     def test_revoked_and_wrong_db_token(self):
         self.cfg.action_disconnect()
         for ep in ("info", "backup/start", "backup/status", "drill/start", "drop"):
-            self._assert_error(self._post(ep, json={}), 401, "not_paired")
+            self._assert_error(self._post(ep, json={}), 401, "unauthorized")
         self.cfg.token_hash = sha256_hex("another-db-token-" + "x" * 40)
         for ep in ("info", "backup/start", "drop"):
-            self._assert_error(self._post(ep, json={}), 401, "bad_token")
+            self._assert_error(self._post(ep, json={}), 401, "unauthorized")
 
     def test_log_retention_and_rotate(self):
         log = self.env["salvor.connector.log"]
@@ -409,3 +419,23 @@ class TestSalvorConnector(HttpCase):
             if env.get(key):
                 out[arg] = env[key]
         return out
+
+    def test_neutralize_unpairs_copy(self):
+        from odoo.modules.neutralize import neutralize_database
+        self.cfg.drill_enabled = True
+        self.env.flush_all()
+        neutralize_database(self.env.cr)
+        self.env.invalidate_all()
+        self.assertFalse(self.cfg.token_hash)
+        self.assertFalse(self.cfg.enabled)
+        self.assertFalse(self.cfg.allowed_ips)
+        self._assert_error(self._post("info"), 401, "unauthorized")
+
+    def test_refusal_rows_are_rate_limited(self):
+        from ..controllers import main as ctl
+        ctl._REFUSALS.clear()
+        log = self.env["salvor.connector.log"]
+        for _i in range(ctl.REFUSALS_PER_MINUTE + 15):
+            self._post("info", token="nope")
+        self.env.invalidate_all()
+        self.assertLessEqual(log.search_count([("http_status", "=", 401)]), ctl.REFUSALS_PER_MINUTE)

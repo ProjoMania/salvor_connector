@@ -3,6 +3,8 @@ from datetime import timedelta
 from odoo import api, fields, models
 
 DEFAULT_RETENTION_DAYS = 90
+REFUSED_RETENTION_DAYS = 14
+MAX_ROWS = 200000
 
 
 class SalvorConnectorLog(models.Model):
@@ -33,5 +35,11 @@ class SalvorConnectorLog(models.Model):
 
     @api.model
     def _gc_old_rows(self):
-        limit = fields.Datetime.now() - timedelta(days=self._retention_days())
-        self.sudo().search([("date", "<", limit)]).unlink()
+        now = fields.Datetime.now()
+        self.sudo().search([("date", "<", now - timedelta(days=self._retention_days()))]).unlink()
+        # refusals (anyone can cause them) are kept for a shorter time
+        days = min(REFUSED_RETENTION_DAYS, self._retention_days())
+        self.sudo().search([("http_status", ">=", 400), ("date", "<", now - timedelta(days=days))]).unlink()
+        # hard cap whatever happens
+        self.env.cr.execute("DELETE FROM salvor_connector_log WHERE id < ("
+                            "SELECT id FROM salvor_connector_log ORDER BY id DESC OFFSET %s LIMIT 1)", (MAX_ROWS,))

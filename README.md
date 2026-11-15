@@ -5,11 +5,11 @@ master password, with `list_db = False`, a `dbfilter`, or behind a reverse proxy
 Protocol: Salvor Connector protocol **v2** (v1 endpoints still served) — `docs/CONNECTOR-PROTOCOL.md`
 in the Salvor repo.
 
-Branches: `20.0`, `19.0`, `18.0`, `17.0` (and `16.0`, unpublished, still v1).
+Branches: `17.0`, `18.0`, `19.0`, `20.0`.
 
 ## Install
 1. Add this repository to `addons_path`, update the apps list, install **Salvor Connector**.
-2. Developer mode → Settings → Technical → Salvor Connector → Settings.
+2. Settings → Salvor Connector → Settings (no developer mode needed; administrators only).
 3. Paste the pairing code from Salvor (Add database → Connector) and click **Connect**.
 
 ## Endpoints (`POST /salvor/v1/<name>`)
@@ -28,21 +28,29 @@ Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
 too (Odoo 19+), or ensure the URL resolves to the database (single db, per-host `dbfilter`).
 
-Errors: `{"error", "message"}` with 401 (token / not paired), 403 (IP, disabled, drills off),
+Errors: `{"error", "message"}` with 401 `unauthorized` — the same answer for an unknown database, a
+database without the module, not paired, or a wrong token, so the endpoints cannot be used to
+discover database names — 403 (IP, disabled, drills off),
 404 (db, job, or a drill this db does not own), 409 (busy / conflict), 416 (range), 422 (bad
 arguments), 507 (not enough disk).
 
 ## Security
 - Only `sha256(token)` is stored; compared with `hmac.compare_digest`. Tokens never logged.
-- Source IP allowlist (IP or CIDR); empty list refuses everything. `X-Forwarded-For` is used
-  (right-most entry) only when Odoo runs with `proxy_mode`.
+- Source IP allowlist (IP or CIDR); empty list refuses everything, checked after the token.
+  **With `proxy_mode` on, the allowlist trusts the right-most `X-Forwarded-For` entry** — only safe
+  if Odoo's own port is not reachable except through your proxy: bind Odoo to localhost
+  (`http_interface = 127.0.0.1`) or firewall it. The token is required either way.
+- **Copies unpair themselves:** the module ships `data/neutralize.sql`, so a database duplicated or
+  restored with Odoo's *neutralize* option (or `odoo-bin neutralize`) loses the token hash, allow
+  list and enabled flag. A plain copy without neutralization keeps the pairing — disconnect it.
 - One backup/restore at a time per database (`flock` in `data_dir`, works across prefork workers;
   the detached job holds it until it exits).
 - **Rotate token**: get a rotation code in Salvor, paste it, click *Rotate token* — the old token
   stops working in the same write. **Disconnect** revokes Salvor's access immediately.
 - **Pull Log** (Settings → Technical → Salvor Connector → Pull Log, administrators only): every
-  call and every refusal with time, endpoint, status, source IP, job and bytes. Kept 90 days
-  (system parameter `salvor_connector.log_retention_days`).
+  call with time, endpoint, status, source IP, job and bytes. Kept 90 days
+  (system parameter `salvor_connector.log_retention_days`). Refusals are rate-limited (30 rows per
+  minute per database), kept 14 days, and the table is capped at 200,000 rows.
 - Drills are off by default. A drill database is created with an atomic `CREATE DATABASE`
   (an existing name is refused, never taken over), recorded as owned by this database
   (*Drill Databases* menu), **neutralized** after restore (every module's `neutralize.sql`:
@@ -57,6 +65,17 @@ arguments), 507 (not enough disk).
   same privilege Odoo's own database manager uses. Backups need nothing extra.
 - Backups write a temporary archive (0600, owner-only) under
   `<data_dir>/salvor_connector/jobs/<db>/`: keep free space ≥ database size (+ filestore for zip).
+  The file is **not encrypted**: it exists from the start of the dump until Salvor's download
+  finishes and it calls `cleanup` (normally minutes); if Salvor never collects it, the hourly cron
+  deletes it **6 hours** after the job started (`salvor_connector.job_ttl_hours`). Uninstall
+  deletes it too.
+
+## Why the dump runs as a detached process
+The dump is started with Odoo's own Python as a separate process in its own session, outside the
+worker that received the request. An in-worker thread dies when prefork recycles or kills the worker
+(`limit_time_real`, memory limits) — measured: the in-request v1 stream was cut at 30 s. The process
+is still bounded: one per database (flock), stopped by `cleanup`, by uninstall, or after 2 × the
+job TTL; it imports nothing from Odoo and only runs `pg_dump` and reads the filestore.
 
 ## Operational notes
 - `limit_time_real` no longer limits backups: the dump runs outside any HTTP request and Salvor
