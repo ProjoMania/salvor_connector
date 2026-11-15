@@ -19,7 +19,7 @@ Branches: `17.0`, `18.0`, `19.0`, `20.0`.
 | `backup/start` | `{"format": "dump"\|"zip"}` | 202 `{job_id}`; the dump runs in a detached process |
 | `backup/status` | `{"job_id"}` | `{state, bytes, sha256 (when done), error}` |
 | `backup/download` | `{"job_id"}` (+ `Range`) | the archive, 200 or 206 (resumable) |
-| `backup/cleanup` | `{"job_id"}` | deletes the job file (auto-expiry after 24 h otherwise) |
+| `backup/cleanup` | `{"job_id"}` | deletes the job file (otherwise removed by the hourly housekeeping once 6 h old) |
 | `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | see protocol | drills only: claim, chunked upload, restore + neutralize, poll |
 | `drop` | `{"name"}` | drills only: drops a drill db **this database created** |
 | `backup`, `restore` | v1 | streamed backup / one-shot drill restore, kept for older Salvor workers |
@@ -28,9 +28,11 @@ Required headers: `Authorization: Bearer <token>`, `X-Salvor-Db: <db>`.
 Odoo must route the request to a database before the module code runs: send `X-Odoo-Database: <db>`
 too (Odoo 19+), or ensure the URL resolves to the database (single db, per-host `dbfilter`).
 
-Errors: `{"error", "message"}` with 401 `unauthorized` — the same answer for an unknown database, a
-database without the module, not paired, or a wrong token, so the endpoints cannot be used to
-discover database names — 403 (IP, disabled, drills off),
+Errors: `{"error", "message"}` with 401 `unauthorized` — the connector's own answer is identical
+for an unknown database, a database without the module, not paired, or a wrong token. Odoo itself
+can still reveal whether a database exists (on 19+ through the status code it returns for an
+`X-Odoo-Database` header, and response timing differs), as it does for any page: restrict
+`/salvor/` to Salvor's IPs at nginx or the firewall if that matters to you — 403 (IP, disabled, drills off),
 404 (db, job, or a drill this db does not own), 409 (busy / conflict), 416 (range), 422 (bad
 arguments), 507 (not enough disk).
 
@@ -50,7 +52,8 @@ arguments), 507 (not enough disk).
 - **Pull Log** (Settings → Technical → Salvor Connector → Pull Log, administrators only): every
   call with time, endpoint, status, source IP, job and bytes. Kept 90 days
   (system parameter `salvor_connector.log_retention_days`). Refusals are rate-limited (30 rows per
-  minute per database), kept 14 days, and the table is capped at 200,000 rows.
+  minute per database, counted in the database, all workers together), kept 14 days, and the table
+  is capped at 200,000 rows.
 - Drills are off by default. A drill database is created with an atomic `CREATE DATABASE`
   (an existing name is refused, never taken over), recorded as owned by this database
   (*Drill Databases* menu), restored only from the archive whose sha256 Salvor committed to, and
@@ -63,14 +66,20 @@ arguments), 507 (not enough disk).
 
 ## Requirements
 - `list_db` is **never** needed or changed — leave the database manager off.
+- The connector serves only databases Odoo itself lists: with `--database`/`db_name` and no
+  `dbfilter`, those names; otherwise databases **owned by the Odoo PostgreSQL role**. A database
+  restored by hand as `postgres` answers 401 until `ALTER DATABASE <db> OWNER TO <odoo role>`.
+- **Uninstall** stops this database's jobs, deletes its job and drill files and drops the drill
+  databases it created (if still the same database, by oid). A drill that is busy at that moment
+  is left and logged — drop it by hand.
 - Drills need the Odoo PostgreSQL role to have **`CREATEDB`** (`ALTER ROLE odoo CREATEDB;`), the
   same privilege Odoo's own database manager uses. Backups need nothing extra.
 - Backups write a temporary archive (0600, owner-only) under
   `<data_dir>/salvor_connector/jobs/<db>/`: keep free space ≥ database size (+ filestore for zip).
   The file is **not encrypted**: it exists from the start of the dump until Salvor's download
-  finishes and it calls `cleanup` (normally minutes); if Salvor never collects it, the hourly cron
-  deletes it **6 hours** after the job started (`salvor_connector.job_ttl_hours`). Uninstall
-  deletes it too.
+  finishes and it calls `cleanup` (normally minutes); if Salvor never collects it, the hourly
+  housekeeping deletes it once it is 6 hours old (so up to ~7 h; `salvor_connector.job_ttl_hours`),
+  and a dump still running at 12 h is stopped and deleted. Uninstall and Disconnect delete it too.
 
 ## Why the dump runs as a detached process
 The dump is started with Odoo's own Python as a separate process in its own session, outside the
