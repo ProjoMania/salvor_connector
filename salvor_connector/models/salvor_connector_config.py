@@ -6,7 +6,7 @@ import requests
 from odoo import _, api, fields, models, release
 from odoo.exceptions import UserError
 
-from ..tools import JOB_TTL_HOURS_DEFAULT, PROTOCOL_VERSION, parse_ips, sha256_hex, sweep_jobs
+from ..tools import JOB_TTL_HOURS_DEFAULT, PROTOCOL_VERSION, parse_ips, sha256_hex, sweep_drill_files, sweep_jobs
 
 _logger = logging.getLogger(__name__)
 
@@ -30,14 +30,15 @@ class SalvorConnectorConfig(models.Model):
              "Requests from any other address are refused (empty = refuse all).")
     drill_enabled = fields.Boolean(
         string="Allow restore drills", default=False,
-        help="Lets Salvor restore a backup of this database into a NEW database named "
-             "salvor_drill_* on this PostgreSQL server (created only if the name is free), "
-             "neutralize it (crons and outgoing mail off, pairing cleared) and drop it afterwards. "
-             "The connector never restores over or drops the live database, and can only drop "
-             "drill databases it created. The archive's SQL runs through psql with the Odoo role's "
-             "rights; psql backslash commands in it fail the drill. A drill database is a full copy "
-             "(logins included) until it is dropped; leftovers go after 24 hours or on Disconnect. "
-             "Needs the CREATEDB privilege and free disk of 2.5x the backup size.")
+        help="Trust level: with this on, whoever holds Salvor's token and calls from an allowed IP "
+             "can have an archive THEY send restored into a NEW database named salvor_drill_* on this "
+             "PostgreSQL server. The archive's SQL runs with the Odoo database account's rights "
+             "(the same role that owns the live database); only psql's own commands (shell, "
+             "connect, file output) are refused. The copy is neutralized (crons and outgoing mail "
+             "off, pairing cleared) in the same transaction, holds production's data and logins "
+             "until it is dropped, and is dropped by Salvor after the check, after 24 hours, on "
+             "Disconnect or with the Drop button. The connector never restores over or drops the "
+             "live database. Needs the CREATEDB privilege and free disk of 2.5x the backup size.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -165,14 +166,30 @@ class SalvorConnectorConfig(models.Model):
         if removed:
             _logger.info("salvor_connector: removed %s expired backup job(s)", removed)
         self.env["salvor.connector.log"]._gc_old_rows()
-        self.env["salvor.connector.drill"]._gc_stale()
+        self.env["salvor.connector.drill"]._gc_stale(self._job_ttl_hours())
+
+    def action_drop_drills(self):
+        """Drop leftover drill databases this database created (oid-checked)."""
+        self.ensure_one()
+        dropped = self.env["salvor.connector.drill"].sudo().search(
+            [("state", "!=", "dropped")])._drop_owned()
+        return {"type": "ir.actions.client", "tag": "display_notification", "params": {
+            "type": "info", "message": _("%s drill database(s) dropped.") % len(dropped)}}
 
     def action_disconnect(self):
         self.ensure_one()
-        self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False})
+        self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False,
+                    "allowed_ips": False, "drill_enabled": False})
         # revoking also stops running backup jobs and deletes their files now
         sweep_jobs(self.env.cr.dbname, 0)
-        # ...and drops the drill databases it created: Salvor can no longer ask
-        self.env["salvor.connector.drill"].sudo().search([("state", "!=", "dropped")])._drop_owned()
+        # ...stops a running drill restore, drops the drill databases it created
+        # (oid-checked) and deletes uploaded drill archives: Salvor can no longer ask
+        for drill in self.env["salvor.connector.drill"].sudo().search([("state", "!=", "dropped")]):
+            try:
+                drill._drop_owned()
+            except UserError:
+                _logger.warning("salvor_connector: drill %s busy at disconnect; the housekeeping drops it",
+                                drill.name)
+        sweep_drill_files(self.env.cr.dbname)
         _logger.info("Salvor Connector disconnected (db=%s)", self.env.cr.dbname)
         return True

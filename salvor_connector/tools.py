@@ -361,6 +361,40 @@ def remove_tree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+def trim_jobs(dbname, keep):
+    """Keep at most `keep` finished backup jobs of this database (newest first):
+    with one running job (the per-db lock) this bounds the disk a token holder
+    can fill to keep + 1 archives."""
+    root = jobs_root(dbname)
+    if not os.path.isdir(root):
+        return 0
+    jobs = []
+    for job_id in os.listdir(root):
+        path = os.path.join(root, job_id)
+        if JOB_ID_RE.match(job_id) and os.path.isdir(path):
+            state = read_state(path)
+            if state.get("state") in ("starting", "running") and pid_alive(state.get("pid")):
+                continue
+            jobs.append((state.get("spawned_at") or os.path.getmtime(path), path))
+    jobs.sort(reverse=True)
+    for _ts, path in jobs[keep:]:
+        remove_tree(path)
+    return max(len(jobs) - keep, 0)
+
+
+def sweep_drill_files(dbname):
+    """Delete this database's drill upload directories (Disconnect, after the
+    owned drill databases were dropped); a runner still alive is stopped first."""
+    base = os.path.join(config["data_dir"], "salvor_connector", "drills", dbname)
+    if not os.path.isdir(base):
+        return
+    for name in os.listdir(base):
+        state = read_state(os.path.join(base, name))
+        if state.get("state") in ("starting", "running"):
+            terminate_state(state)
+    shutil.rmtree(base, ignore_errors=True)
+
+
 def sweep_jobs(dbname, ttl_hours):
     """Delete this database's backup jobs older than ttl_hours (finished or
     not: a runner still alive after 2x ttl is terminated first)."""
