@@ -11,7 +11,7 @@ from ..tools import PROTOCOL_VERSION, parse_ips, sha256_hex
 _logger = logging.getLogger(__name__)
 
 PAIRING_CODE_RE = re.compile(r"^SLV-[A-Z0-9]{4}-[A-Z0-9]{4}$")
-DEFAULT_SALVOR_URL = "https://salvorcloud.com"
+DEFAULT_SALVOR_URL = "https://app.salvorcloud.com"
 
 
 class SalvorConnectorConfig(models.Model):
