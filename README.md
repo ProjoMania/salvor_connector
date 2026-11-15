@@ -3,14 +3,15 @@
 Free LGPL-3 addon that lets [Salvor](https://salvorcloud.com) back up one Odoo database without the
 master password, with `list_db = False`, a `dbfilter`, or behind a reverse proxy.
 Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for older Salvor workers and
-`protocols: [1, 2]`; the v1 `backup` stream is still served, the v1 `restore` route was removed in 2.0.1) —
+`protocols: [1, 2]`; the v1 `backup` stream is still served; the v1 `restore` route answers 410 `drills_disabled`) —
 `docs/CONNECTOR-PROTOCOL.md` in the Salvor repo.
 
-> **Restore drills through the connector are disabled in this version (2.0.2); Salvor verifies backups
-> on its own side.** Restoring an archive as the database role that owns production cannot be made safe
+> **Restore drills through the connector are disabled since 2.0.2.** Salvor checks each archive's
+> integrity (sha256); restore drills need a master-password or SSH connection. Restoring an archive as the database role that owns production cannot be made safe
 > by filtering the archive, so 2.0.0/2.0.1's drill endpoints answer 410 `drills_disabled` and the switch
-> is gone. Upgrade from 2.0.0/2.0.1 now: the hourly housekeeping, *Disconnect*, the `drop` call and the
-> *Drop* buttons still remove drill databases those versions created.
+> is gone. **If you run 2.0.0 or 2.0.1, upgrade now**: those versions still serve their drill endpoints
+> to a token holder. The hourly housekeeping, *Disconnect*, the `drop` call and the button on the
+> settings form remove drill databases those versions created.
 
 Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
 `/proc`); Odoo on Windows or macOS is not supported.
@@ -23,12 +24,12 @@ Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job use
 ## Endpoints (`POST /salvor/v1/<name>`)
 | Endpoint | Body | Result |
 |---|---|---|
-| `info` | – | JSON: `protocol: 1`, `protocols: [1, 2]`, `capabilities`, versions, sizes, drill flag, free disk |
+| `info` | – | JSON: `protocol: 1`, `protocols: [1, 2]`, `capabilities` (`backup_job`, `range_download`, `audit_log`, `drill_cleanup`), versions, sizes, `drill_enabled: false`, free disk |
 | `backup/start` | `{"format": "dump"\|"zip"}` | 202 `{job_id}`; the dump runs in a detached process |
 | `backup/status` | `{"job_id"}` | `{state, bytes, sha256 (when done), error}` |
 | `backup/download` | `{"job_id"}` (+ `Range`) | the archive, 200 or 206 (resumable) |
 | `backup/cleanup` | `{"job_id"}` | deletes the job file (otherwise removed by the hourly housekeeping once 6 h old) |
-| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **disabled in 2.0.2**: 410 `drills_disabled` |
+| `drill/start` · `drill/upload` · `drill/restore` · `drill/status` | – | **disabled since 2.0.2**: 410 `drills_disabled` (upload bodies over 1 KiB: 413) |
 | `drop` | `{"name"}` | drops a leftover drill db **this database created** (by oid) |
 | `backup` | v1 | streamed backup in one request, kept for older Salvor workers |
 | `restore` | v1 | 410 `drills_disabled` |
@@ -41,7 +42,7 @@ Errors: `{"error", "message"}` with 401 `unauthorized` — the connector's own a
 for an unknown database, a database without the module, not paired, or a wrong token. Odoo itself
 can still reveal whether a database exists (on 19+ through the status code it returns for an
 `X-Odoo-Database` header, and response timing differs), as it does for any page: restrict
-`/salvor/` to Salvor's IPs at nginx or the firewall if that matters to you — 403 (IP, disabled, drills off),
+`/salvor/` to Salvor's IPs at nginx or the firewall if that matters to you — 403 (IP, Connector disabled),
 404 (db, job, or a drill this db does not own), 409 (busy / conflict), 410 (drills disabled), 416 (range),
 422 (bad arguments), 507 (not enough disk).
 
@@ -54,23 +55,24 @@ can still reveal whether a database exists (on 19+ through the status code it re
 - **Copies unpair themselves:** the module ships `data/neutralize.sql`, so a database duplicated or
   restored with Odoo's *neutralize* option (or `odoo-bin neutralize`) loses the token hash, allow
   list and enabled flag. A plain copy without neutralization keeps the pairing — disconnect it.
-- One backup/restore at a time per database (`flock` in `data_dir`, works across prefork workers;
+- One backup at a time per database, at most 2 stored (`flock` in `data_dir`, works across prefork workers;
   the detached job holds it until it exits).
 - **Rotate token**: get a rotation code in Salvor, paste it, click *Rotate token* — the old token
-  stops working in the same write. **Disconnect** revokes Salvor's access immediately, clears the allowed IPs and the drill switch, stops a
-  running backup or drill restore, deletes their files and drops the drill databases this database created.
+  stops working in the same write. **Disconnect** revokes Salvor's access immediately, clears the allowed IPs, stops a running
+  backup, deletes its file and drops leftover drill databases this database created.
 - **Pull Log** (Settings → Salvor Connector → Pull Log, administrators only): time, endpoint, status,
-  source IP, job and bytes of each `info`, backup start, download range, cleanup, drill step, drop and
-  refusal, and the end of each backup job. Status polls (`backup/status`, `drill/status`) are not
+  source IP, job and bytes of each `info`, backup start, download range, cleanup, `drop` and refusal
+  (including refused drill calls), and the end of each backup job. Successful status polls are not
   logged one by one. Kept 90 days
   (system parameter `salvor_connector.log_retention_days`). Refusals are rate-limited (30 rows per
   minute per database, counted in the database, all workers together), kept 14 days, and the table
   is capped at 200,000 rows; at the cap refusals are evicted first, so a flood of refused calls never
   pushes out the history of successful ones.
-- Drill databases left by 2.0.0/2.0.1 (named `salvor_drill_*`, recorded with their oid under *Drill
-  Databases*) are full copies of production, logins included: the hourly housekeeping drops those older
-  than 24 h (`salvor_connector.drill_ttl_hours`), *Disconnect* drops them all, and both the list and the
-  settings form have a **Drop** button. A database of that name the connector did not create is never
+- Drill databases left by 2.0.0/2.0.1 (named `salvor_drill_*`, recorded with their oid) are full copies
+  of production, logins included. While any exist the settings form shows a warning with a **Drop them
+  now** button (administrators only); the hourly housekeeping drops them after 24 h
+  (`salvor_connector.drill_ttl_hours`; 6 h if the upload or restore never finished), and *Disconnect*
+  and uninstall drop them too. A drill database busy at uninstall time is left and logged. A database of that name the connector did not create is never
   touched.
 - No endpoint lists databases. The only outbound call is the HTTPS pairing POST.
 

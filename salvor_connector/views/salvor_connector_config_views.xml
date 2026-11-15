@@ -9,9 +9,6 @@
                     <button name="action_connect" type="object" string="Connect" class="btn-primary"/>
                     <button name="action_rotate" type="object" string="Rotate token" invisible="not is_paired"/>
                     <button name="action_view_log" type="object" string="Pull log"/>
-                    <button name="action_drop_drills" type="object" string="Drop leftover drill databases"
-                            groups="base.group_system"
-                            confirm="Drop every drill database this connector created? Their data is deleted."/>
                     <button name="action_disconnect" type="object" string="Disconnect"
                             invisible="not is_paired"
                             confirm="Salvor will no longer be able to back up this database. Continue?"/>
@@ -22,6 +19,15 @@
                     </div>
                     <div class="alert alert-success" role="status" invisible="not is_paired">
                         Connected to Salvor. Backups of this database can be taken by Salvor from the allowed IPs below.
+                    </div>
+                    <div class="alert alert-danger" role="alert" invisible="not leftover_drill_count">
+                        A restore drill run by Salvor Connector 2.0.0 or 2.0.1 left
+                        <b><field name="leftover_drill_count" readonly="1" class="oe_inline"/></b>
+                        scratch database(s) named salvor_drill_* on this server: full copies of this database,
+                        logins included. They are dropped automatically after 24 hours.
+                        <button name="action_drop_drills" type="object" string="Drop them now"
+                                class="btn-link" groups="base.group_system"
+                                confirm="Drop every drill database this connector created? Their data is deleted."/>
                     </div>
                     <div class="alert alert-warning" role="status" invisible="is_paired">
                         Not connected. In Salvor choose "Add database" then "Connector", paste the pairing code here and click Connect.
@@ -80,7 +86,6 @@
                 <field name="job_id"/>
                 <filter name="refused" string="Refused" domain="[('http_status', '&gt;=', 400)]"/>
                 <filter name="backups" string="Backups" domain="[('endpoint', 'like', 'backup')]"/>
-                <filter name="drills" string="Drills" domain="['|', ('endpoint', 'like', 'drill'), ('endpoint', 'in', ('restore', 'drop'))]"/>
             </search>
         </field>
     </record>
@@ -138,10 +143,4 @@
               action="action_salvor_connector_log"
               groups="base.group_system"
               sequence="20"/>
-    <menuitem id="menu_salvor_connector_drill"
-              name="Drill Databases"
-              parent="menu_salvor_connector_root"
-              action="action_salvor_connector_drill"
-              groups="base.group_system"
-              sequence="30"/>
 </odoo>
