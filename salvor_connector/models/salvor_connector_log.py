@@ -40,6 +40,14 @@ class SalvorConnectorLog(models.Model):
         # refusals (anyone can cause them) are kept for a shorter time
         days = min(REFUSED_RETENTION_DAYS, self._retention_days())
         self.sudo().search([("http_status", ">=", 400), ("date", "<", now - timedelta(days=days))]).unlink()
-        # hard cap whatever happens
-        self.env.cr.execute("DELETE FROM salvor_connector_log WHERE id < ("
-                            "SELECT id FROM salvor_connector_log ORDER BY id DESC OFFSET %s LIMIT 1)", (MAX_ROWS,))
+        # hard cap: evict refusals first (anyone can cause them), oldest first, so a
+        # flood never pushes out the history of successful calls
+        self.env.cr.execute("SELECT count(*) FROM salvor_connector_log")
+        excess = self.env.cr.fetchone()[0] - MAX_ROWS
+        if excess > 0:
+            self.env.cr.execute("DELETE FROM salvor_connector_log WHERE id IN (SELECT id FROM salvor_connector_log "
+                                "WHERE http_status >= 400 ORDER BY id LIMIT %s)", (excess,))
+            excess -= self.env.cr.rowcount
+        if excess > 0:
+            self.env.cr.execute("DELETE FROM salvor_connector_log WHERE id IN (SELECT id FROM salvor_connector_log "
+                                "ORDER BY id LIMIT %s)", (excess,))

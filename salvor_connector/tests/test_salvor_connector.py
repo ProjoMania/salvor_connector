@@ -658,3 +658,46 @@ class TestSalvorConnector(HttpCase):
         self.env.invalidate_all()
         self.cfg.action_disconnect()
         self.assertFalse(self._drill_db_exists(name2))
+        self.assertFalse(self.cfg.allowed_ips)
+        self.assertFalse(self.cfg.drill_enabled)
+        self.assertFalse(os.path.isdir(os.path.dirname(tools.drill_dir(self.dbname, name2))))
+
+    def test_drill_refuses_crafted_custom_dump(self):
+        """Same guard on the pg_restore -f - path: a custom dump whose TOC carries
+        a meta-command (length-preserving patch of a COMMENT) is refused."""
+        self.cfg.drill_enabled = True
+        src = drill_name("ut_src")
+        self._force_drop(src)
+        self.addCleanup(self._force_drop, src)
+        tools.create_drill_db(src)
+        mark = os.path.join(tempfile.gettempdir(), "salvor_pwnd_%s" % RUN)
+        self.addCleanup(lambda: os.path.exists(mark) and os.unlink(mark))
+        payload = b"';\n\\! touch " + mark.encode() + b"\n--"
+        filler = b"Z" * len(payload)
+        subprocess.run([find_pg_tool("psql"), "-q", "-X", "-v", "ON_ERROR_STOP=1", "--dbname=" + src, "-c",
+                        "CREATE TABLE t (x int); COMMENT ON TABLE t IS '%s'" % filler.decode()],
+                       env=exec_pg_environ(), check=True, capture_output=True)
+        dump = subprocess.run([find_pg_tool("pg_dump"), "-Fc", "-Z0", src], env=exec_pg_environ(),
+                              check=True, capture_output=True).stdout
+        self.assertIn(filler, dump)
+        ds = self._drill("uxcustom", dump.replace(filler, payload))
+        self.assertEqual(ds["state"], "failed", ds)
+        self.assertIn("unsafe archive", ds["error"])
+        self.assertFalse(os.path.exists(mark))
+        # the unpatched dump passes the guard (it then fails neutralization: no Odoo tables)
+        ds = self._drill("uxcustok", dump)
+        self.assertNotIn("unsafe archive", ds.get("error") or "")
+
+    def test_backup_jobs_are_capped(self):
+        ids = [self._run_job("dump")[0] for _ in range(3)]
+        self.assertEqual(sorted(os.listdir(tools.jobs_root(self.dbname))), sorted(ids[1:]))
+
+    def test_pull_log_cap_evicts_refusals_first(self):
+        from ..models import salvor_connector_log as logmod
+        log = self.env["salvor.connector.log"].sudo()
+        log.search([]).unlink()
+        log.create([{"endpoint": "info", "http_status": 200} for _ in range(3)])
+        log.create([{"endpoint": "info", "http_status": 401} for _ in range(5)])
+        with patch.object(logmod, "MAX_ROWS", 4):
+            log._gc_old_rows()
+        self.assertEqual(sorted(log.search([]).mapped("http_status")), [200, 200, 200, 401])
