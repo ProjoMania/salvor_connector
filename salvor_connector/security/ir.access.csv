@@ -1,0 +1,2 @@
+id,name,model_id,group_id/id,operation,domain
+access_salvor_connector_config_system,salvor.connector.config system,salvor.connector.config,base.group_system,ru,

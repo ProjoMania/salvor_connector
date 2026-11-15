@@ -9,9 +9,9 @@
     "depends": ["base"],
     "external_dependencies": {"python": ["requests"]},
     "data": [
-        "security/ir.model.access.csv",
         "data/salvor_connector_data.xml",
         "views/salvor_connector_config_views.xml",
+        'security/ir.access.csv',
     ],
     "images": ["static/description/icon.png"],
     "uninstall_hook": "uninstall_hook",
