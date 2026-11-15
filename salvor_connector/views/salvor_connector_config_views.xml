@@ -9,6 +9,9 @@
                     <button name="action_connect" type="object" string="Connect" class="btn-primary"/>
                     <button name="action_rotate" type="object" string="Rotate token" invisible="not is_paired"/>
                     <button name="action_view_log" type="object" string="Pull log"/>
+                    <button name="action_drop_drills" type="object" string="Drop leftover drill databases"
+                            groups="base.group_system"
+                            confirm="Drop every drill database this connector created? Their data is deleted."/>
                     <button name="action_disconnect" type="object" string="Disconnect"
                             invisible="not is_paired"
                             confirm="Salvor will no longer be able to back up this database. Continue?"/>
@@ -55,7 +58,7 @@
         <field name="model">salvor.connector.log</field>
         <field name="arch" type="xml">
             <tree string="Salvor pull log" create="0" edit="0" delete="0"
-                  decoration-danger="http_status &gt;= 400" decoration-muted="http_status &lt; 300 and endpoint in ('info', 'backup/status')">
+                  decoration-danger="http_status &gt;= 400" decoration-muted="http_status &lt; 300 and endpoint == 'info'">
                 <field name="date"/>
                 <field name="endpoint"/>
                 <field name="http_status"/>

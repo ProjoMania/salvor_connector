@@ -40,6 +40,7 @@ CONFIG_MODEL = "salvor.connector.config"
 LOG_MODEL = "salvor.connector.log"
 DRILL_MODEL = "salvor.connector.drill"
 UPLOAD_CHUNK_MAX = 256 * 1024 * 1024
+MAX_STORED_JOBS = 2  # backup archives kept per database, the new one included
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
 UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=UPLOAD_CHUNK_MAX + 1024)
@@ -306,6 +307,7 @@ class SalvorConnectorController(http.Controller):
             if not lock.acquire():
                 raise SalvorError(409, "busy", "Another backup or restore is running for this database")
             try:
+                tools.trim_jobs(dbname, MAX_STORED_JOBS - 1)
                 job_id = secrets.token_hex(16)
                 path = tools.job_dir(dbname, job_id)
                 tools._private_dir(tools.jobs_root(dbname))
