@@ -118,7 +118,8 @@ class SalvorConnectorConfig(models.Model):
             "allowed_ips": "\n".join(str(ip) for ip in ips if isinstance(ip, str)),
             "instance_id": str(data.get("instance_id") or ""),
             "paired_at": fields.Datetime.now(),
-            "salvor_url": base,
+            "salvor_url": (data.get("salvor_url") or base).rstrip("/")
+            if str(data.get("salvor_url") or "").startswith("https://") else base,
             "pairing_code": False,
             "enabled": True,
         })

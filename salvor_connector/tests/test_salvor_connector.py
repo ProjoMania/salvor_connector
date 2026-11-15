@@ -9,6 +9,7 @@ import zipfile
 from odoo.tests import HttpCase, tagged
 from odoo.tools.misc import exec_pg_environ, find_pg_tool
 
+from .. import dbcompat
 from ..tools import DbLock, sha256_hex
 
 TOKEN = "t" * 20 + "0123456789abcdefghijklmnopqrstuv"
@@ -71,19 +72,22 @@ class TestSalvorConnector(HttpCase):
         self._assert_error(self._post("info", db="-h"), 404, "db_not_found")
 
     def test_bad_drill_name(self):
+        # drills disabled (default): restore and drop refused with 403
+        self._assert_error(self._post("drop", json={"name": "salvor_drill_x"}), 403, "drill_disabled")
+        self.cfg.drill_enabled = True
         self._assert_error(self._post("drop", json={"name": "salvor_drill_x"}), 404, "db_not_found")
         for bad in ("prod", self.dbname, "salvor_drill_", "salvor_drill_X", "salvor_drill_a;drop",
                     "salvor_drill_../a", "salvor_drill_" + "a" * 41):
             self._assert_error(self._post("drop", json={"name": bad}), 422, "bad_args")
-        # restore refused while drills are disabled (default)
+        self.cfg.drill_enabled = False
         resp = self.opener.post(self.base_url() + "/salvor/v1/restore",
                                 headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN},
-                                data={"name": "salvor_drill_a"}, files={"file": ("x.dump", b"PGDMP")})
+                                data={"name": "salvor_drill_a"}, files={"backup_file": ("x.dump", b"PGDMP")})
         self._assert_error(resp, 403, "drill_disabled")
         self.cfg.drill_enabled = True
         resp = self.opener.post(self.base_url() + "/salvor/v1/restore",
                                 headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN},
-                                data={"name": self.dbname}, files={"file": ("x.dump", b"PGDMP")})
+                                data={"name": self.dbname}, files={"backup_file": ("x.dump", b"PGDMP")})
         self._assert_error(resp, 422, "bad_args")
 
     def test_bad_format(self):
@@ -91,7 +95,7 @@ class TestSalvorConnector(HttpCase):
 
     # --- happy paths ------------------------------------------------------
     def test_info(self):
-        resp = self._post("info")
+        resp = self._post("info", json={})
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         data = resp.json()
         self.assertEqual(data["protocol"], 1)
@@ -140,6 +144,20 @@ class TestSalvorConnector(HttpCase):
             self.assertIn("manifest.json", names)
             self.assertIsNone(zf.testzip())
             self.assertIn(b"PostgreSQL database dump", zf.read("dump.sql")[:400])
+
+    def test_drop_drill_ok(self):
+        name = "salvor_drill_unittest"
+        if not dbcompat.pg_db_exists(name):
+            subprocess.run([find_pg_tool("createdb"), name], env=exec_pg_environ(), check=True)
+        self.cfg.drill_enabled = True
+        try:
+            resp = self._post("drop", json={"name": name})
+            self.assertEqual(resp.status_code, 200, resp.text[:300])
+            self.assertEqual(resp.json(), {"ok": True, "db": name})
+            self.assertFalse(dbcompat.pg_db_exists(name))
+        finally:
+            if dbcompat.pg_db_exists(name):
+                dbcompat.drop_drill(name)
 
     def test_busy(self):
         lock = DbLock(self.dbname)
