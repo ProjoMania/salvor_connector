@@ -30,8 +30,12 @@ class SalvorConnectorConfig(models.Model):
              "Requests from any other address are refused (empty = refuse all).")
     drill_enabled = fields.Boolean(
         string="Allow restore drills", default=False,
-        help="Lets Salvor restore a backup into a NEW database named salvor_drill_* and drop it "
-             "afterwards. The live database is never touched.")
+        help="Lets Salvor restore a backup of this database into a NEW database named "
+             "salvor_drill_* on this PostgreSQL server (created only if the name is free), "
+             "neutralize it (crons and outgoing mail off, pairing cleared) and drop it afterwards. "
+             "The connector never restores over or drops the live database, and can only drop "
+             "drill databases it created. Needs the CREATEDB privilege and free disk of 2.5x "
+             "the backup size.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -163,5 +167,7 @@ class SalvorConnectorConfig(models.Model):
     def action_disconnect(self):
         self.ensure_one()
         self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False})
+        # revoking also stops running backup jobs and deletes their files now
+        sweep_jobs(self.env.cr.dbname, 0)
         _logger.info("Salvor Connector disconnected (db=%s)", self.env.cr.dbname)
         return True

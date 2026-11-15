@@ -246,10 +246,29 @@ class SalvorConnectorController(http.Controller):
                 raise
             self._audit(dbname, "backup", 200, detail="v1 streamed, format=%s" % fmt)
 
+            token_hash = settings["token_hash"]
+
+            def still_authorized():
+                """Revocation/disconnect/disable during a long v1 stream stops it."""
+                try:
+                    with registry.cursor() as cr:
+                        cr.execute("SELECT token_hash, enabled FROM salvor_connector_config ORDER BY id LIMIT 1")
+                        row = cr.fetchone()
+                    return bool(row and row[0] == token_hash and row[1])
+                except Exception:  # noqa: BLE001
+                    return False
+
             def generate():
                 ok = False
+                checked = time.time()
                 try:
-                    yield from chunks
+                    for chunk in chunks:
+                        if time.time() - checked > 30:
+                            checked = time.time()
+                            if not still_authorized():
+                                _logger.warning("salvor_connector: token revoked during backup of %s; stopping", dbname)
+                                return
+                        yield chunk
                     ok = True
                 finally:
                     lock.release()
@@ -627,6 +646,9 @@ class SalvorConnectorController(http.Controller):
             self._check_drill_name(name, dbname)
             if upload is None:
                 raise SalvorError(422, "bad_args", "Missing backup_file")
+            expected_sha = (request.httprequest.form.get("sha256") or "").strip().lower()
+            if expected_sha and not SHA_RE.match(expected_sha):
+                raise SalvorError(422, "bad_args", "sha256 must be 64 hex characters")
             lock = DbLock(dbname)
             if not lock.acquire():
                 raise SalvorError(409, "busy", "Another backup or restore is running for this database")
@@ -636,6 +658,9 @@ class SalvorConnectorController(http.Controller):
                 fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "wb") as fh:
                     upload.save(fh)
+                if expected_sha and tools.file_sha256(archive) != expected_sha:
+                    self._drop(registry, dbname, name, rec_id)
+                    raise SalvorError(422, "sha256_mismatch", "The uploaded archive does not match its sha256")
                 self._drill_write(registry, rec_id, state="restoring")
                 pid = tools.spawn_runner(path, self._restore_spec(name))
                 while tools.pid_alive(pid):

@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 import subprocess
 import tempfile
 import time
@@ -309,6 +310,7 @@ class TestSalvorConnector(HttpCase):
         self.assertEqual(ds["neutralization"]["active_crons"], 0)
         self.assertEqual(ds["neutralization"]["active_mail_servers"], 0)
         self.assertTrue(ds["neutralization"]["is_neutralized_flag"])
+        self.assertEqual(ds["neutralization"]["pairing_left"], 0)
         with closing(psycopg2.connect(dbname=name, **self._pg_kwargs())) as cnx, cnx.cursor() as cr:
             cr.execute("SELECT count(*) FROM ir_cron c WHERE active AND id NOT IN (SELECT res_id FROM ir_model_data "
                        "WHERE model='ir.cron' AND module='base' AND name='autovacuum_job')")
@@ -439,3 +441,10 @@ class TestSalvorConnector(HttpCase):
             self._post("info", token="nope")
         self.env.invalidate_all()
         self.assertLessEqual(log.search_count([("http_status", "=", 401)]), ctl.REFUSALS_PER_MINUTE)
+
+    def test_disconnect_stops_and_wipes_jobs(self):
+        job_id, st = self._run_job("dump")
+        path = tools.job_dir(self.dbname, job_id)
+        self.assertTrue(os.path.isdir(path))
+        self.cfg.action_disconnect()
+        self.assertFalse(os.path.isdir(path))
