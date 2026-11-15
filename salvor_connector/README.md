@@ -10,7 +10,8 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
 > integrity (sha256); restore drills need a master-password or SSH connection. Restoring an archive as the database role that owns production cannot be made safe
 > by filtering the archive, so 2.0.0/2.0.1's drill endpoints answer 410 `drills_disabled` and the switch
 > is gone. **If you run 2.0.0 or 2.0.1, upgrade now**: those versions still serve their drill endpoints
-> to a token holder. The hourly housekeeping, *Disconnect*, the `drop` call and the button on the
+> to a token holder. Pull your branch, **restart Odoo** (it keeps running the old Python code until it
+> is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps). The hourly housekeeping, *Disconnect*, the `drop` call and the button on the
 > settings form remove drill databases those versions created.
 
 Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
@@ -71,7 +72,7 @@ can still reveal whether a database exists (on 19+ through the status code it re
 - Drill databases left by 2.0.0/2.0.1 (named `salvor_drill_*`, recorded with their oid) are full copies
   of production, logins included. While any exist the settings form shows a warning with a **Drop them
   now** button (administrators only); the hourly housekeeping drops them after 24 h
-  (`salvor_connector.drill_ttl_hours`; 6 h if the upload or restore never finished), and *Disconnect*
+  (`salvor_connector.drill_ttl_hours`; 6 h if the upload or restore never finished, including a restore left running), and *Disconnect*
   and uninstall drop them too. A drill database busy at uninstall time is left and logged. A database of that name the connector did not create is never
   touched.
 - No endpoint lists databases. The only outbound call is the HTTPS pairing POST.
