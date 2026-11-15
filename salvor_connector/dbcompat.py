@@ -40,10 +40,6 @@ def pg_db_exists(name):
         return bool(cr.fetchone())
 
 
-def restore_drill(name, path):
-    _unwrap(db_service.restore_db)(name, path, copy=True)
-
-
 def drop_drill(name):
     Registry.delete(name)
     odoo.sql_db.close_db(name)

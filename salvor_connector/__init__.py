@@ -12,3 +12,6 @@ def uninstall_hook(env):
     path = lock_dir()
     if os.path.isdir(path):
         shutil.rmtree(path, ignore_errors=True)
+    # this database's backup job files (archives) go with the module
+    from .tools import jobs_root
+    shutil.rmtree(jobs_root(env.cr.dbname), ignore_errors=True)

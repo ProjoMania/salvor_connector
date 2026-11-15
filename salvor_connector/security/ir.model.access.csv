@@ -1,2 +1,4 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_salvor_connector_config_system,salvor.connector.config system,model_salvor_connector_config,base.group_system,1,1,0,0
+access_salvor_connector_log_system,salvor.connector.log system,model_salvor_connector_log,base.group_system,1,0,0,0
+access_salvor_connector_drill_system,salvor.connector.drill system,model_salvor_connector_drill,base.group_system,1,0,0,0
