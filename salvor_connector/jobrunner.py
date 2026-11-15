@@ -255,28 +255,47 @@ def unsupported_settings(version):
     return {name for name, since in NEWER_SETTINGS.items() if version < since}
 
 
+_PREAMBLE_PREFIXES = (b"SET ", b"SELECT pg_catalog.set_config", b"\\restrict", b"--")
+
+
+def _is_preamble(line):
+    stripped = line.strip()
+    return not stripped or stripped.startswith(_PREAMBLE_PREFIXES)
+
+
 def filter_preamble(chunks, drop):
     """Drop `SET <name> = ...;` lines for settings the target server does not
-    know, within the dump's preamble (before any data); the rest is passed
-    through untouched, so ON_ERROR_STOP still catches every real error."""
+    know — only in pg_dump's leading preamble (SET / set_config / \restrict /
+    comments / blank lines). Filtering stops at the first other line and
+    everything after it (DDL, COPY data) passes through byte for byte, so
+    ON_ERROR_STOP still catches every real error."""
     if not drop:
         yield from chunks
         return
-    head = b""
+    buf = b""
     for chunk in chunks:
-        head += chunk
-        if len(head) >= PREAMBLE_BYTES:
-            break
-    else:
-        chunk = None
-    cut = head.rfind(b"\n") + 1 if len(head) >= PREAMBLE_BYTES else len(head)
-    lines = head[:cut].split(b"\n")
-    kept = [ln for ln in lines
-            if not any(ln.startswith(b"SET " + name + b" ") or ln.startswith(b"SET " + name + b"=")
-                       for name in drop)]
-    yield b"\n".join(kept)
-    yield head[cut:]
-    yield from chunks
+        buf += chunk
+        out = []
+        while True:
+            nl = buf.find(b"\n")
+            if nl < 0:
+                if len(buf) > PREAMBLE_BYTES:  # no newline for that long: not a preamble
+                    yield b"".join(out) + buf
+                    yield from chunks
+                    return
+                break
+            line, buf = buf[:nl + 1], buf[nl + 1:]
+            if not _is_preamble(line):
+                yield b"".join(out) + line + buf
+                yield from chunks
+                return
+            if not any(line.startswith(b"SET " + n + b" ") or line.startswith(b"SET " + n + b"=")
+                       for n in drop):
+                out.append(line)
+        if out:
+            yield b"".join(out)
+    if buf:
+        yield buf
 
 
 def run_restore(job):
