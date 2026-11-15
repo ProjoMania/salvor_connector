@@ -83,39 +83,60 @@ def _module_installed_raw(dbname):
         return False
 
 
+_REFUSALS = {}
+REFUSALS_PER_MINUTE = 30
+
+
+def _refusal_budget(dbname):
+    """At most REFUSALS_PER_MINUTE refused-call rows per db per minute per
+    process, so an unauthenticated caller cannot grow the log table at will."""
+    minute = int(time.time() // 60)
+    key = (dbname, minute)
+    if len(_REFUSALS) > 1000:
+        _REFUSALS.clear()
+    _REFUSALS[key] = _REFUSALS.get(key, 0) + 1
+    return _REFUSALS[key] <= REFUSALS_PER_MINUTE
+
+
 class SalvorConnectorController(http.Controller):
 
     # ------------------------------------------------------------------ core
     def _context(self, endpoint):
-        """Resolve db, check pairing/IP/token. Returns (dbname, registry, settings dict)."""
-        dbname = (request.httprequest.headers.get("X-Salvor-Db") or "").strip()
-        if not dbname or not DBNAME_RE.match(dbname):
-            raise SalvorError(404, "db_not_found", "Unknown database")
-        if dbname not in dbcompat.list_dbs() or not _module_installed_raw(dbname):
-            raise SalvorError(404, "db_not_found", "Unknown database")
-        registry = Registry(dbname)
-        if CONFIG_MODEL not in registry:
-            raise SalvorError(404, "db_not_found", "Unknown database")
-        with registry.cursor() as cr:
-            env = api.Environment(cr, SUPERUSER_ID, {})
-            rec = env[CONFIG_MODEL]._get_singleton()
-            settings = {
-                "token_hash": rec.token_hash or "",
-                "allowed_ips": rec.allowed_ips or "",
-                "enabled": rec.enabled,
-                "drill_enabled": rec.drill_enabled,
-                "module_version": rec._module_version(),
-            }
-        addr = _remote_addr()
-        if not settings["token_hash"]:
-            raise SalvorError(401, "not_paired", "Connector is not paired")
-        if not ip_allowed(addr, settings["allowed_ips"]):
-            raise SalvorError(403, "ip_forbidden", "Source address not allowed")
+        """Resolve db, check token/IP/enabled. Returns (dbname, registry, settings dict).
+
+        Until a valid token is presented every refusal is the same 401
+        "unauthorized" — unknown database, module not installed, not paired or
+        wrong token — so an anonymous caller cannot probe which database names
+        exist (list_db=False stays meaningful). Only a caller holding this
+        database's token learns about IP/disabled refusals.
+        """
         auth = request.httprequest.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
         presented = sha256_hex(token) if token else ""
-        if not hmac.compare_digest(presented.encode(), settings["token_hash"].encode()):
-            raise SalvorError(401, "bad_token", "Invalid token")
+        dbname = (request.httprequest.headers.get("X-Salvor-Db") or "").strip()
+        settings = None
+        registry = None
+        if dbname and DBNAME_RE.match(dbname) and dbname in dbcompat.list_dbs() \
+                and _module_installed_raw(dbname):
+            registry = Registry(dbname)
+            if CONFIG_MODEL in registry:
+                with registry.cursor() as cr:
+                    env = api.Environment(cr, SUPERUSER_ID, {})
+                    rec = env[CONFIG_MODEL]._get_singleton()
+                    settings = {
+                        "token_hash": rec.token_hash or "",
+                        "allowed_ips": rec.allowed_ips or "",
+                        "enabled": rec.enabled,
+                        "drill_enabled": rec.drill_enabled,
+                        "module_version": rec._module_version(),
+                    }
+        stored = (settings or {}).get("token_hash") or "0" * 64  # same compare cost on a miss
+        if not (hmac.compare_digest(presented.encode(), stored.encode()) and settings
+                and settings["token_hash"] and presented):
+            raise SalvorError(401, "unauthorized",
+                              "Unauthorized: unknown database, connector not paired, or invalid token")
+        if not ip_allowed(_remote_addr(), settings["allowed_ips"]):
+            raise SalvorError(403, "ip_forbidden", "Source address not allowed")
         if not settings["enabled"]:
             raise SalvorError(403, "disabled", "Connector is disabled")
         return dbname, registry, settings
@@ -127,6 +148,8 @@ class SalvorConnectorController(http.Controller):
         _logger.info("salvor_connector %s -> %s %s from %s %s", endpoint, status, result, addr, detail or "")
         if not dbname:
             return
+        if status >= 400 and not _refusal_budget(dbname):
+            return  # flood of refusals: server log only, the table stays bounded
         try:
             registry = Registry.registries[dbname] if dbname in Registry.registries else None
             if registry is None or LOG_MODEL not in registry:
