@@ -42,8 +42,6 @@ DRILL_MODEL = "salvor.connector.drill"
 UPLOAD_CHUNK_MAX = 256 * 1024 * 1024
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
-# v1 restore takes the whole archive in one multipart body: lift Odoo's 128 MiB default
-RESTORE_OPTS = dict(ROUTE_OPTS, max_content_length=None)
 UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=UPLOAD_CHUNK_MAX + 1024)
 
 
@@ -130,8 +128,8 @@ class SalvorConnectorController(http.Controller):
         return dbname, registry, settings
 
     def _audit(self, dbname, endpoint, status, result="ok", detail="", job_id=None, nbytes=None):
-        """One salvor.connector.log row per call (never the token), visible in
-        Settings → Technical → Salvor Connector → Pull Log; touch last_call_at."""
+        """One salvor.connector.log row (never the token), visible in
+        Settings → Salvor Connector → Pull Log; touch last_call_at."""
         addr = _remote_addr()
         _logger.info("salvor_connector %s -> %s %s from %s %s", endpoint, status, result, addr, detail or "")
         if not dbname:
@@ -634,54 +632,13 @@ class SalvorConnectorController(http.Controller):
         return self._handle("drill/status", run)
 
     # ---------------------------------------------------- v1 restore / drop
-    @http.route("/salvor/v1/restore", **RESTORE_OPTS)
+    @http.route("/salvor/v1/restore", **ROUTE_OPTS)
     def restore(self, **kw):
+        """Removed in 2.0.1: it took a whole archive in one request with an optional
+        checksum. Drills go through drill/start, drill/upload, drill/restore."""
         def run(dbname, registry, settings):
-            self._require_drills(settings)
-            size = request.httprequest.content_length or 0
-            # check the disk BEFORE werkzeug spools the upload anywhere
-            need = int(size * DRILL_DISK_FACTOR)
-            free = tools.disk_free(config["data_dir"])
-            if free < need:
-                raise SalvorError(507, "insufficient_disk",
-                                  "Drill refused: %d MiB free in the Odoo data_dir, %d MiB needed (2.5x the archive)"
-                                  % (free // 2 ** 20, need // 2 ** 20), free_bytes=int(free), required_bytes=need)
-            name = (request.httprequest.form.get("name") or "").strip()
-            upload = request.httprequest.files.get("backup_file")
-            self._check_drill_name(name, dbname)
-            if upload is None:
-                raise SalvorError(422, "bad_args", "Missing backup_file")
-            expected_sha = (request.httprequest.form.get("sha256") or "").strip().lower()
-            if expected_sha and not SHA_RE.match(expected_sha):
-                raise SalvorError(422, "bad_args", "sha256 must be 64 hex characters")
-            lock = DbLock(dbname)
-            if not lock.acquire():
-                raise SalvorError(409, "busy", "Another backup or restore is running for this database")
-            try:
-                rec_id, path = self._drill_claim(dbname, registry, name, size)
-                archive = os.path.join(path, "archive")
-                fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "wb") as fh:
-                    upload.save(fh)
-                if expected_sha and tools.file_sha256(archive) != expected_sha:
-                    self._drop(registry, dbname, name, rec_id)
-                    raise SalvorError(422, "sha256_mismatch", "The uploaded archive does not match its sha256")
-                self._drill_write(registry, rec_id, state="restoring")
-                pid = tools.spawn_runner(path, self._restore_spec(name))
-                while tools.pid_alive(pid):
-                    time.sleep(0.5)
-                state = self._sync_drill(registry, rec_id, path)
-            finally:
-                lock.release()
-            if state.get("state") != "done":
-                _logger.warning("salvor_connector restore into %s failed: %s", name, state.get("error"))
-                try:
-                    self._drop(registry, dbname, name, rec_id)
-                except Exception:  # noqa: BLE001
-                    _logger.exception("salvor_connector: cleanup of %s failed", name)
-                raise SalvorError(422, "restore_failed", "Restore failed")
-            self._audit(dbname, "restore", 200, detail="into=%s (v1)" % name, nbytes=size)
-            return _json({"ok": True, "db": name})
+            raise SalvorError(410, "gone", "The v1 restore route was removed; use drill/start + "
+                                           "drill/upload + drill/restore (protocol 2)")
         return self._handle("restore", run)
 
     @http.route("/salvor/v1/drop", **ROUTE_OPTS)
