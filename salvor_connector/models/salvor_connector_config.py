@@ -31,7 +31,8 @@ class SalvorConnectorConfig(models.Model):
     drill_enabled = fields.Boolean(
         string="Allow restore drills (disabled)", default=False, readonly=True,
         help="Kept for data compatibility only: restore drills through the connector are disabled "
-             "in this version; Salvor verifies backups on its own side.")
+             "since 2.0.2. Salvor checks each archive's integrity (sha256); restore drills need a "
+             "master-password or SSH connection.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -165,9 +166,18 @@ class SalvorConnectorConfig(models.Model):
     def _force_drills_off(self):
         self.sudo().search([("drill_enabled", "=", True)]).write({"drill_enabled": False})
 
+    leftover_drill_count = fields.Integer(compute="_compute_leftover_drill_count")
+
+    def _compute_leftover_drill_count(self):
+        count = self.env["salvor.connector.drill"].sudo().search_count([("state", "!=", "dropped")])
+        for rec in self:
+            rec.leftover_drill_count = count
+
     def action_drop_drills(self):
         """Drop leftover drill databases this database created (oid-checked)."""
         self.ensure_one()
+        if not self.env.user.has_group("base.group_system"):
+            raise UserError(_("Only administrators can drop drill databases."))
         dropped = self.env["salvor.connector.drill"].sudo().search(
             [("state", "!=", "dropped")])._drop_owned()
         return {"type": "ir.actions.client", "tag": "display_notification", "params": {

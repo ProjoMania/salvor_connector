@@ -43,7 +43,8 @@ UPLOAD_CHUNK_MAX = 256 * 1024 * 1024
 MAX_STORED_JOBS = 2  # backup archives kept per database, the new one included
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False, "readonly": False}
-UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=UPLOAD_CHUNK_MAX + 1024)
+# drills are disabled (2.0.2): refuse any upload body before Odoo parses or spools it
+UPLOAD_OPTS = dict(ROUTE_OPTS, max_content_length=1024)
 
 
 class SalvorError(Exception):
@@ -657,8 +658,9 @@ class SalvorConnectorController(http.Controller):
     @staticmethod
     def _require_drills(settings):
         raise SalvorError(410, "drills_disabled",
-                          "Restore drills through the connector are disabled in this version; "
-                          "Salvor verifies backups on its own side")
+                          "Restore drills through the connector are disabled since 2.0.2. Salvor "
+                          "checks each archive's integrity (sha256); restore drills need a "
+                          "master-password or SSH connection")
 
     @staticmethod
     def _check_drill_name(name, live_db):
