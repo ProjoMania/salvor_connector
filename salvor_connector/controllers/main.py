@@ -209,7 +209,7 @@ class SalvorConnectorController(http.Controller):
                 "db": dbname,
                 "db_size_bytes": int(db_size),
                 "filestore_bytes_estimate": int(fs_size),
-                "drill_enabled": bool(settings["drill_enabled"]),
+                "drill_enabled": False,  # 2.0.2: connector drills are disabled
                 "protocols": PROTOCOLS_SUPPORTED,
                 "capabilities": CAPABILITIES,
                 "data_dir_free_bytes": int(tools.disk_free(config["data_dir"])),
@@ -636,17 +636,15 @@ class SalvorConnectorController(http.Controller):
     # ---------------------------------------------------- v1 restore / drop
     @http.route("/salvor/v1/restore", **ROUTE_OPTS)
     def restore(self, **kw):
-        """Removed in 2.0.1: it took a whole archive in one request with an optional
-        checksum. Drills go through drill/start, drill/upload, drill/restore."""
+        """Removed: connector drills are disabled (2.0.2)."""
         def run(dbname, registry, settings):
-            raise SalvorError(410, "gone", "The v1 restore route was removed; use drill/start + "
-                                           "drill/upload + drill/restore (protocol 2)")
+            self._require_drills(settings)
         return self._handle("restore", run)
 
     @http.route("/salvor/v1/drop", **ROUTE_OPTS)
     def drop(self, **kw):
         def run(dbname, registry, settings):
-            self._require_drills(settings)
+            # kept in 2.0.2 so leftovers of 2.0.0/2.0.1 drills can still be removed (oid-checked)
             name = str(self._json_body().get("name") or "").strip()
             self._check_drill_name(name, dbname)
             rec_id, rstate = self._drill_owned(registry, name)
@@ -658,8 +656,9 @@ class SalvorConnectorController(http.Controller):
     # ------------------------------------------------------------- helpers
     @staticmethod
     def _require_drills(settings):
-        if not settings["drill_enabled"]:
-            raise SalvorError(403, "drill_disabled", "Restore drills are not enabled in the connector")
+        raise SalvorError(410, "drills_disabled",
+                          "Restore drills through the connector are disabled in this version; "
+                          "Salvor verifies backups on its own side")
 
     @staticmethod
     def _check_drill_name(name, live_db):
