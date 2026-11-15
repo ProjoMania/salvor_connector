@@ -51,14 +51,16 @@ can still reveal whether a database exists (on 19+ through the status code it re
 - One backup/restore at a time per database (`flock` in `data_dir`, works across prefork workers;
   the detached job holds it until it exits).
 - **Rotate token**: get a rotation code in Salvor, paste it, click *Rotate token* — the old token
-  stops working in the same write. **Disconnect** revokes Salvor's access immediately.
+  stops working in the same write. **Disconnect** revokes Salvor's access immediately, clears the allowed IPs and the drill switch, stops a
+  running backup or drill restore, deletes their files and drops the drill databases this database created.
 - **Pull Log** (Settings → Salvor Connector → Pull Log, administrators only): time, endpoint, status,
   source IP, job and bytes of each `info`, backup start, download range, cleanup, drill step, drop and
   refusal, and the end of each backup job. Status polls (`backup/status`, `drill/status`) are not
   logged one by one. Kept 90 days
   (system parameter `salvor_connector.log_retention_days`). Refusals are rate-limited (30 rows per
   minute per database, counted in the database, all workers together), kept 14 days, and the table
-  is capped at 200,000 rows.
+  is capped at 200,000 rows; at the cap refusals are evicted first, so a flood of refused calls never
+  pushes out the history of successful ones.
 - Drills are off by default. A drill database is created with an atomic `CREATE DATABASE`
   (an existing name is refused, never taken over), recorded as owned by this database
   (*Drill Databases* menu), restored only from the archive whose sha256 Salvor committed to, and
@@ -93,8 +95,9 @@ can still reveal whether a database exists (on 19+ through the status code it re
 - Backups write a temporary archive (0600, owner-only) under
   `<data_dir>/salvor_connector/jobs/<db>/`: keep free space ≥ database size (+ filestore for zip).
   The file is **not encrypted**: it exists from the start of the dump until Salvor's download
-  finishes and it calls `cleanup` (normally minutes); if Salvor never collects it, the hourly
-  housekeeping deletes it once it is 6 hours old (an hourly sweep, so up to ~7 h; `salvor_connector.job_ttl_hours`),
+  finishes and it calls `cleanup` (normally minutes; at most 2 backup archives are kept per database, so a
+  new job deletes all but the newest finished one); if Salvor never collects it, the hourly
+  housekeeping deletes it once it is 6 hours old (an hourly sweep, so up to about 7 hours; `salvor_connector.job_ttl_hours`),
   and a dump still running at 12 h is stopped and deleted. Uninstall and Disconnect delete it too.
 
 ## Why the dump runs as a detached process
