@@ -82,11 +82,7 @@ class SalvorConnectorDrill(models.Model):
         old was orphaned (Disconnect mid-drill, Salvor unreachable). A drill whose
         upload or restore never finished is dropped, with its uploaded archive,
         after the backup job TTL (6 h), like a backup file."""
-        try:
-            ttl = int(self.env["ir.config_parameter"].sudo().get_param(
-                "salvor_connector.drill_ttl_hours") or 24)
-        except ValueError:
-            ttl = 24
+        ttl = self.env["ir.config_parameter"].sudo().get_int("salvor_connector.drill_ttl_hours", 24) or 24
         cutoff = fields.Datetime.now() - timedelta(hours=max(ttl, 1))
         unfinished = fields.Datetime.now() - timedelta(hours=max(job_ttl_hours, 1))
         stale = self.sudo().search([("state", "!=", "dropped"), "|", ("create_date", "<", cutoff),
