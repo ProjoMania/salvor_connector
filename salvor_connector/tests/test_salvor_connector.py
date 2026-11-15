@@ -305,7 +305,7 @@ class TestSalvorConnector(HttpCase):
             self.assertEqual(cr.fetchone()[0], 0)
             cr.execute("SELECT value FROM ir_config_parameter WHERE key='database.uuid'")
             drill_uuid = cr.fetchone()[0]
-        live_uuid = self.env["ir.config_parameter"].sudo().get_param("database.uuid")
+        live_uuid = self.env["ir.config_parameter"].sudo().get_str("database.uuid")
         self.assertNotEqual(drill_uuid, live_uuid)
         self.env.invalidate_all()
         rec = self.env["salvor.connector.drill"].search([("name", "=", name)])
