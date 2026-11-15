@@ -534,7 +534,7 @@ class TestSalvorConnector(HttpCase):
         rec.state = "restoring"  # a restore left running by 2.0.0/2.0.1 counts as unfinished
         self.env["salvor.connector.drill"]._gc_stale()  # fresh: kept
         self.assertTrue(self._drill_db_exists(name))
-        self.env.cr.execute("UPDATE salvor_connector_drill SET create_date = now() - interval '7 hours' "
+        self.env.cr.execute("UPDATE salvor_connector_drill SET create_date = (now() at time zone 'UTC') - interval '7 hours' "
                             "WHERE id = %s", (rec.id,))
         self.env.invalidate_all()
         self.env["salvor.connector.drill"]._gc_stale()
