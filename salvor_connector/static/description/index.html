@@ -17,7 +17,7 @@
             <h4 style="color:#0d9488;">How it works</h4>
             <ol>
                 <li>In Salvor choose <i>Add database &rarr; Connector</i>. Salvor shows a one-time pairing code.</li>
-                <li>In Odoo open <i>Settings &rarr; Technical &rarr; Salvor Connector</i> (developer mode, administrators only),
+                <li>In Odoo open <i>Settings &rarr; Salvor Connector</i> (administrators only),
                     paste the code and click <b>Connect</b>.</li>
                 <li>Done. Salvor can now request backups from its published IP addresses only.</li>
             </ol>
@@ -25,10 +25,16 @@
             <ul>
                 <li>Only a SHA-256 hash of the access token is stored; the token itself never appears in Odoo.</li>
                 <li>Every request must come from an allowed IP address and carry the token.</li>
-                <li>Backups are streamed directly; one backup at a time per database.</li>
-                <li>Restore drills are <b>off by default</b> and can only create and drop databases named
-                    <code>salvor_drill_*</code>. The live database is never restored over or dropped.</li>
-                <li>Every call is recorded in <i>Settings &rarr; Technical &rarr; Logging</i>.</li>
+                <li>Backups are built by a background process on your server into a temporary file readable only by
+                    the Odoo user, downloaded by Salvor in resumable parts, and deleted right after (at most 6 hours later);
+                    one backup at a time per database.</li>
+                <li>Restore drills are <b>off by default</b>. When on, they can only create a new database named
+                    <code>salvor_drill_*</code> (never an existing name), neutralize it (crons and outgoing mail off,
+                    pairing cleared) in the same transaction as the restore, and drop only drill databases this database
+                    created. The connector never restores over or drops the live database. Drills need the CREATEDB
+                    privilege and free disk of 2.5&times; the backup size.</li>
+                <li>Calls from Salvor are listed in <i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>
+                    (kept 90 days; refused calls are rate-limited to 30 rows per minute and kept 14 days).</li>
                 <li><b>Disconnect</b> revokes access immediately. Uninstalling removes all connector data.</li>
             </ul>
             <p>The only outbound connection the module makes is the single HTTPS pairing request when you click Connect.</p>

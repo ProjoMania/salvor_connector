@@ -167,8 +167,6 @@ def neutralize(spec, dbname):
                     if query:
                         cr.execute(query)
                         ran.append(module)
-            for key, value in (("database.uuid", str(uuid.uuid1())), ("database.secret", str(uuid.uuid4()))):
-                cr.execute("UPDATE ir_config_parameter SET value = %s WHERE key = %s", (value, key))
             # Belt and braces in case a module shipped no neutralize.sql for its own
             # outgoing channel: nothing in a drill may send mail or run scheduled work.
             cr.execute("""UPDATE ir_cron SET active = false WHERE active AND id NOT IN (
@@ -185,13 +183,56 @@ def neutralize(spec, dbname):
             crons = cr.fetchone()[0]
             cr.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host != 'invalid'")
             mail = cr.fetchone()[0]
+            pairing = 0
+            cr.execute("SELECT to_regclass('salvor_connector_config')")
+            if cr.fetchone()[0]:
+                cr.execute("SELECT count(*) FROM salvor_connector_config WHERE token_hash IS NOT NULL OR enabled")
+                pairing = cr.fetchone()[0]
             cr.execute("SELECT value FROM ir_config_parameter WHERE key = 'database.is_neutralized'")
             row = cr.fetchone()
             flag = bool(row and str(row[0]).lower() in ("true", "1"))
     finally:
         cnx.close()
     return {"modules_neutralized": ran, "active_crons": crons, "active_mail_servers": mail,
-            "is_neutralized_flag": flag}
+            "is_neutralized_flag": flag, "pairing_left": pairing}
+
+
+def neutralize_tail(spec):
+    """SQL appended to the restore stream so it commits in the SAME transaction
+    as the data: no moment exists where the drill database has active crons,
+    mail servers or Salvor pairing that a cron thread could pick up."""
+    # pg_dump output ends with search_path = '' — tables must resolve again
+    parts = ["SET search_path TO public, pg_catalog;"]
+    for module, path in sorted((spec.get("neutralize_sql") or {}).items()):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                query = fh.read().strip()
+        except OSError:
+            continue
+        if not query or "$salvor_q$" in query:
+            continue
+        mod = module.replace("'", "''")
+        parts.append(
+            "DO $salvor_do$ BEGIN IF EXISTS (SELECT 1 FROM ir_module_module WHERE name = '%s' "
+            "AND state IN ('installed', 'to upgrade', 'to remove')) THEN EXECUTE $salvor_q$%s$salvor_q$; "
+            "END IF; END $salvor_do$;" % (mod, query))
+    parts.append("""
+UPDATE ir_cron SET active = false WHERE active AND id NOT IN (
+    SELECT res_id FROM ir_model_data WHERE model = 'ir.cron' AND module = 'base' AND name = 'autovacuum_job');
+UPDATE ir_mail_server SET active = false WHERE active AND smtp_host != 'invalid';
+DO $salvor_do$ BEGIN
+  IF to_regclass('fetchmail_server') IS NOT NULL THEN
+    UPDATE fetchmail_server SET active = false WHERE active;
+  END IF;
+  IF to_regclass('salvor_connector_config') IS NOT NULL THEN
+    UPDATE salvor_connector_config SET token_hash = NULL, allowed_ips = NULL, paired_at = NULL,
+           instance_id = NULL, enabled = false, drill_enabled = false;
+  END IF;
+END $salvor_do$;
+UPDATE ir_config_parameter SET value = '%s' WHERE key = 'database.uuid';
+UPDATE ir_config_parameter SET value = '%s' WHERE key = 'database.secret';
+""" % (uuid.uuid1(), uuid.uuid4()))
+    return "\n".join(parts).encode()
 
 
 def run_restore(job):
@@ -204,7 +245,9 @@ def run_restore(job):
     with tempfile.TemporaryDirectory(dir=job.dir) as tmp:
         filestore_src = None
         if magic == b"PGDMP":
-            cmd = [spec["pg_restore"], "--no-owner", "--dbname=" + target, job.archive]
+            # pg_restore renders SQL; psql runs it + the neutralization as ONE transaction
+            source = [spec["pg_restore"], "--no-owner", "-f", "-", job.archive]
+            sql_file = None
         elif zipfile.is_zipfile(job.archive):
             with zipfile.ZipFile(job.archive) as z:
                 names = z.namelist()
@@ -215,25 +258,55 @@ def run_restore(job):
                 z.extractall(tmp, members)
             if any(m.startswith("filestore/") for m in members):
                 filestore_src = os.path.join(tmp, "filestore")
-            cmd = [spec["psql"], "-q", "-X", "--dbname=" + target, "-f", os.path.join(tmp, "dump.sql")]
+            source = None
+            sql_file = os.path.join(tmp, "dump.sql")
         else:
             raise RuntimeError("archive is neither a pg_dump custom dump nor an Odoo zip")
-        proc = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.PIPE)
-        if proc.returncode != 0:
-            raise RuntimeError("%s failed (code %s): %s" % (
-                os.path.basename(cmd[0]), proc.returncode, proc.stderr.decode(errors="replace")[-300:]))
+        psql_err = open(os.path.join(tmp, "psql.err"), "w+b")
+        src_err = open(os.path.join(tmp, "src.err"), "w+b")
+        psql = subprocess.Popen([spec["psql"], "-q", "-X", "-1", "-v", "ON_ERROR_STOP=1",
+                                 "--dbname=" + target], env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=psql_err)
+        src = None
+        try:
+            if source:
+                src = subprocess.Popen(source, env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=src_err)
+                feed = src.stdout
+            else:
+                feed = open(sql_file, "rb")
+            with feed:
+                for chunk in iter(lambda: feed.read(CHUNK), b""):
+                    psql.stdin.write(chunk)
+            psql.stdin.write(b"\n")
+            psql.stdin.write(neutralize_tail(spec))
+            psql.stdin.close()
+            rc = psql.wait()
+            psql_err.seek(0)
+            err = psql_err.read()
+            if src is not None and src.wait() != 0:
+                src_err.seek(0)
+                raise RuntimeError("pg_restore failed (code %s): %s" % (
+                    src.returncode, src_err.read().decode(errors="replace")[-300:]))
+            if rc != 0:
+                raise RuntimeError("psql failed (code %s): %s" % (rc, err.decode(errors="replace")[-300:]))
+        finally:
+            for proc in (src, psql):
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+            psql_err.close()
+            src_err.close()
         if filestore_src:
             dest = spec["filestore_dest"]
             if os.path.exists(dest):
                 shutil.rmtree(dest)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.move(filestore_src, dest)
-    job.write_state(phase="neutralizing")
-    result = neutralize(spec, target)
-    if result["active_crons"] or result["active_mail_servers"]:
-        raise RuntimeError("neutralization left %(active_crons)s cron(s) and "
-                           "%(active_mail_servers)s mail server(s) active" % result)
+    job.write_state(phase="verifying")
+    result = neutralize(spec, target)  # idempotent re-run + the counts we report
+    if result["active_crons"] or result["active_mail_servers"] or result["pairing_left"]:
+        raise RuntimeError("neutralization left %(active_crons)s cron(s), %(active_mail_servers)s "
+                           "mail server(s), pairing=%(pairing_left)s" % result)
     try:
         os.unlink(job.archive)  # the drill db now holds the data; drop the copy early
     except OSError:
