@@ -37,7 +37,6 @@
                         </group>
                         <group string="Access">
                             <field name="enabled"/>
-                            <field name="drill_enabled"/>
                             <field name="allowed_ips" placeholder="One IP or CIDR per line"/>
                         </group>
                     </group>
