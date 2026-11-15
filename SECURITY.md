@@ -1,14 +1,16 @@
 # Security policy and advisories
 
-Report a vulnerability privately through GitHub's private vulnerability reporting: on this repository,
-**Security → Report a vulnerability**. Please do not file public issues for security problems.
+Report a vulnerability privately by email to **info@salvorcloud.com** (subject "Security"). Please do
+not file public issues for security problems. GitHub private vulnerability reporting is not enabled on
+this repository yet; once it is, **Security → Report a vulnerability** will work too.
 
-Releases are signed tags `<odoo series>-<module version>` (e.g. `19.0-2.0.4`); pin a tag to control
-what you install. Published advisories are listed under **Security → Advisories**.
+Releases will be signed tags `<odoo series>-<module version>` (e.g. `19.0-2.0.5`), with a GitHub
+release per tag; until they exist, install from the branch head. Advisories will be listed under
+**Security → Advisories**.
 
 ## Advisory SC-2026-01: restore drills could run psql meta-commands
 
-GitHub advisory: see **Security → Advisories** (draft text in `docs/release/GHSA-draft.md`). Exact
+GitHub advisory: pending (draft text in `docs/release/GHSA-draft.md`). Exact
 affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.0).
 
 | | |
@@ -16,12 +18,12 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Component | `salvor_connector`, restore-drill feature |
 | Affected | **1.0.0**: `/salvor/v1/restore` pipes the archive's SQL through `psql` when *Allow restore drills* is on. **2.0.0**: drill restore via `psql`, with no meta-command guard. **2.0.1**: a guard is in place, but it failed review (it can be bypassed). |
 | Not affected | **2.0.2 and 2.0.3**: every drill route raises 410 before doing any work; the restore code is still shipped but unreachable. |
-| Fixed | **2.0.4**: the restore code is removed from the module. The drill routes are stubs that answer 410 `drills_removed` without reading the request. |
+| Fixed | **2.0.4**: the restore code is removed from the module. The drill routes are stubs that answer 410 `drills_removed` without reading the request body. **2.0.5**: the stubs check token, IP and enabled first, like every other route, and refuse any body over 1 KiB. |
 | Preconditions | All three: a valid connector token, a request from an allowed IP address, and restore drills switched **on** (they are off by default). |
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to 2.0.4 or later on every database where the module is installed: pull your branch
+1. Upgrade to 2.0.5 (2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
@@ -32,3 +34,5 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
    from 1.x) and drop them by hand.
 
 Salvor (the service) refuses to pair with, back up through or otherwise call any connector below 2.0.2.
+After upgrading from 1.0.0, 2.0.0 or 2.0.1, pair again: take a new pairing code in Salvor and click
+**Connect** on the module's settings form.

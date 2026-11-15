@@ -1,9 +1,9 @@
 """Version-specific database helpers (Odoo 20.0: odoo.modules.db).
 
 In 20 the database service moved to odoo.modules.db (no list_db decorator
-on dump/restore/drop any more). Drill restores do not use it: the detached
-runner (jobrunner.py) restores into a database created by
-tools.create_drill_db. Callers must already have validated ``name`` against
+on dump/restore/drop any more). The connector has no restore code (removed
+in 2.0.4); these helpers list databases and check or drop leftover drill
+databases directly. Callers must already have validated ``name`` against
 tools.DRILL_RE.
 """
 import logging
