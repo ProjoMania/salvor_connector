@@ -34,8 +34,10 @@ class SalvorConnectorConfig(models.Model):
              "salvor_drill_* on this PostgreSQL server (created only if the name is free), "
              "neutralize it (crons and outgoing mail off, pairing cleared) and drop it afterwards. "
              "The connector never restores over or drops the live database, and can only drop "
-             "drill databases it created. Needs the CREATEDB privilege and free disk of 2.5x "
-             "the backup size.")
+             "drill databases it created. The archive's SQL runs through psql with the Odoo role's "
+             "rights; psql backslash commands in it fail the drill. A drill database is a full copy "
+             "(logins included) until it is dropped; leftovers go after 24 hours or on Disconnect. "
+             "Needs the CREATEDB privilege and free disk of 2.5x the backup size.")
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
@@ -158,16 +160,19 @@ class SalvorConnectorConfig(models.Model):
 
     @api.model
     def _cron_housekeeping(self):
-        """Daily: expire backup job files of this database and old pull-log rows."""
+        """Hourly: expire backup job files, old pull-log rows and orphaned drill databases."""
         removed = sweep_jobs(self.env.cr.dbname, self._job_ttl_hours())
         if removed:
             _logger.info("salvor_connector: removed %s expired backup job(s)", removed)
         self.env["salvor.connector.log"]._gc_old_rows()
+        self.env["salvor.connector.drill"]._gc_stale()
 
     def action_disconnect(self):
         self.ensure_one()
         self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False})
         # revoking also stops running backup jobs and deletes their files now
         sweep_jobs(self.env.cr.dbname, 0)
+        # ...and drops the drill databases it created: Salvor can no longer ask
+        self.env["salvor.connector.drill"].sudo().search([("state", "!=", "dropped")])._drop_owned()
         _logger.info("Salvor Connector disconnected (db=%s)", self.env.cr.dbname)
         return True
