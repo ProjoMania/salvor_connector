@@ -127,7 +127,7 @@ class _QueueWriter:
 def stream_odoo_zip(dbname, manifest):
     """Yield an Odoo-format backup zip (dump.sql, filestore/, manifest.json).
 
-    Same layout as ``odoo.service.db.dump_db(db, stream, 'zip')`` but written
+    Same layout as ``odoo.modules.db.dump(db, stream, backup_format='zip')`` but written
     straight to the socket: pg_dump stdout is piped into the zip entry and the
     filestore files are read in place, so nothing is copied to a temp dir.
     """

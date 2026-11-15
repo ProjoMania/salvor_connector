@@ -87,7 +87,7 @@ class SalvorConnectorConfig(models.Model):
             raise UserError(_("The Salvor URL must start with https://"))
         payload = {
             "code": code,
-            "odoo_url": self.env["ir.config_parameter"].sudo().get_param("web.base.url"),
+            "odoo_url": self.env["ir.config_parameter"].sudo().get_str("web.base.url"),
             "db": self.env.cr.dbname,
             "odoo_version": release.version,
             "module_version": self._module_version(),
