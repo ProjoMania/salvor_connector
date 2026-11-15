@@ -118,9 +118,9 @@
 
     <menuitem id="menu_salvor_connector_root"
               name="Salvor Connector"
-              parent="base.menu_custom"
+              parent="base.menu_administration"
               groups="base.group_system"
-              sequence="200"/>
+              sequence="90"/>
     <menuitem id="menu_salvor_connector"
               name="Settings"
               parent="menu_salvor_connector_root"
