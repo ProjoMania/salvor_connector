@@ -53,8 +53,10 @@ arguments), 507 (not enough disk).
   minute per database), kept 14 days, and the table is capped at 200,000 rows.
 - Drills are off by default. A drill database is created with an atomic `CREATE DATABASE`
   (an existing name is refused, never taken over), recorded as owned by this database
-  (*Drill Databases* menu), **neutralized** after restore (every module's `neutralize.sql`:
-  crons and outgoing mail off; new database uuid), and only drill databases this database
+  (*Drill Databases* menu), restored only from the archive whose sha256 Salvor committed to, and
+  **neutralized in the same transaction as the restore** (every installed module's
+  `neutralize.sql`: crons and outgoing mail off; Salvor pairing cleared; new database uuid), so no
+  cron thread ever sees it active, and only drill databases this database
   created can be dropped. Names must match `^salvor_drill_[a-z0-9_]{1,40}$`; never the live db.
 - Drills refuse to start unless the Odoo `data_dir` has at least **2.5 × the archive size** free.
 - No endpoint lists databases. The only outbound call is the HTTPS pairing POST.
@@ -78,9 +80,13 @@ is still bounded: one per database (flock), stopped by `cleanup`, by uninstall, 
 job TTL; it imports nothing from Odoo and only runs `pg_dump` and reads the filestore.
 
 ## Operational notes
-- `limit_time_real` no longer limits backups: the dump runs outside any HTTP request and Salvor
+- Neither `limit_time_real` nor `limit_time_cpu` limits backups any more: the dump runs outside any HTTP request and Salvor
   downloads it in 256 MiB ranges, each a short request. (Measured: a 2.6 GB zip with
-  `--workers=2 --limit-time-real=30` completed in 76 s; the v1 streamed endpoint was cut at 30 s.)
+  `--workers=2 --limit-time-real=30 --limit-time-cpu=20` completed in 76 s; the v1 streamed
+  endpoint was cut at 30 s.) Both limits still apply to the legacy v1 `backup`/`restore`
+  endpoints used by older Salvor workers; v2 makes them irrelevant, so no limit needs raising.
+- Revocation is checked on every request (each download range is a request) and, for a legacy v1
+  stream, every 30 s while it runs; *Disconnect* also stops a running backup job and deletes its file.
 - nginx: no special timeouts are needed for v2. Keep `client_max_body_size` ≥ 257m on
   `/salvor/` for drill uploads (64 MiB chunks from Salvor, 256 MiB accepted) and do not buffer
   `/salvor/v1/backup` for v1 workers (`proxy_buffering off`; responses send `X-Accel-Buffering: no`).
