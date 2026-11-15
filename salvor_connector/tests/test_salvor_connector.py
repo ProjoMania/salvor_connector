@@ -117,6 +117,27 @@ class TestSalvorConnector(HttpCase):
         self.assertFalse([c for c in info["capabilities"] if c.startswith("drill_") and c != "drill_cleanup"])
         self.cfg._force_drills_off()
         self.assertFalse(self.cfg.drill_enabled)
+        # the disabled upload route rejects a body before Odoo parses it
+        resp = self.opener.post(self.base_url() + "/salvor/v1/drill/upload", data=b"x" * 4096, timeout=60,
+                                headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN,
+                                         "X-Salvor-Drill": "salvor_drill_a", "X-Salvor-Offset": "0",
+                                         "Content-Type": "application/octet-stream"})
+        self.assertEqual(resp.status_code, 413, resp.text[:200])
+
+    def test_drop_leftovers_needs_admin(self):
+        user = self.env["res.users"].create({"name": "salvor ut user", "login": "salvor_ut_user_%s" % RUN,
+                                             "group_ids" if "group_ids" in self.env["res.users"]._fields
+                                             else "groups_id": [(6, 0, [self.env.ref("base.group_user").id])]})
+        name = drill_name("ut_adm")
+        self.addCleanup(self._force_drop, name)
+        self._owned_drill(name)
+        with self.assertRaises(UserError):  # AccessError is a UserError too
+            self.cfg.with_user(user).action_drop_drills()
+        self.assertTrue(dbcompat.pg_db_exists(name))
+        self.cfg.action_drop_drills()  # administrator
+        self.assertFalse(dbcompat.pg_db_exists(name))
+        self.env.invalidate_all()
+        self.assertEqual(self.cfg.leftover_drill_count, 0)
 
     def test_bad_drill_name(self):
         self._assert_error(self._post("drop", json={"name": "salvor_drill_x"}), 404, "db_not_found")

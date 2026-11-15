@@ -1,43 +1,150 @@
 <section class="oe_container">
     <div class="oe_row oe_spaced">
         <h2 class="oe_slogan" style="color:#0d9488;">Salvor Connector</h2>
-        <h3 class="oe_slogan">Off-site backups of this Odoo database, without sharing the master password</h3>
+        <h3 class="oe_slogan">Off-site backups of this Odoo database, without the master password</h3>
     </div>
 </section>
 
 <section class="oe_container">
     <div class="oe_row oe_spaced">
         <div class="oe_span12">
+            <div style="border:1px solid #dc2626;border-radius:6px;padding:10px 14px;margin-bottom:16px;">
+                <b>Running version 2.0.0 or 2.0.1? Upgrade now</b> (<code>-u salvor_connector</code>, or
+                <i>Upgrade</i> in Apps) on every database where it is installed. Those versions still answer
+                restore-drill calls; from 2.0.2 on, the module refuses them and removes the scratch databases
+                they left. The pairing is kept and backups go on as before.
+            </div>
+
+            <h4 style="color:#0d9488;">What it is</h4>
             <p>
-                Salvor (<a href="https://salvorcloud.com">salvorcloud.com</a>) takes scheduled, verified, off-site
-                backups of Odoo databases. This free module lets Salvor back up <b>this one database</b> even when
-                the database manager is disabled (<code>list_db = False</code>), a <code>dbfilter</code> is set,
-                or Odoo runs behind a reverse proxy.
+                Salvor (<a href="https://salvorcloud.com">salvorcloud.com</a>) keeps a second, independent copy of
+                your Odoo databases off your host and alerts you from outside when backups stop. This small, free
+                module lets Salvor take that copy of <b>this one database</b>. It does not need your master
+                password, and it does not need the database manager to be switched on.
             </p>
-            <h4 style="color:#0d9488;">How it works</h4>
+            <p>
+                The module is useful only with a Salvor account. On its own it does nothing: it takes no backup by
+                itself, sends no data, and refuses every request until it is paired. <b>It does not perform restore
+                drills; it takes backups.</b> Salvor checks each archive's integrity (sha256); restore drills need a
+                master-password or SSH connection.
+            </p>
+
+            <h4 style="color:#0d9488;">The problem it solves</h4>
+            <p>
+                Odoo's advice for an internet-facing server is <code>list_db = False</code>. That also switches off
+                <code>/web/database/backup</code>, so every backup tool that works with the master password stops
+                working on exactly the servers that were secured correctly. Where the manager is left on, the
+                master password a backup tool holds can also create, duplicate, restore and drop databases. The
+                Connector replaces that with one narrow door for one database.
+            </p>
+
+            <h4 style="color:#0d9488;">How it works (pull model)</h4>
             <ol>
-                <li>In Salvor choose <i>Add database &rarr; Connector</i>. Salvor shows a one-time pairing code.</li>
-                <li>In Odoo open <i>Settings &rarr; Salvor Connector</i> (administrators only),
-                    paste the code and click <b>Connect</b>.</li>
-                <li>Done. Salvor can now request backups from its published IP addresses only.</li>
+                <li>In Salvor choose <i>Add database &rarr; Connector</i>. Salvor shows a pairing code
+                    (<code>SLV-XXXX-XXXX</code>), valid for 10 minutes, usable once.</li>
+                <li>In Odoo an administrator opens <i>Settings &rarr; Salvor Connector &rarr; Settings</i>, pastes the
+                    code and clicks <b>Connect</b>. Developer mode is not needed.</li>
+                <li>The module makes one HTTPS request to Salvor. Salvor answers with an access token and the IP
+                    address its backups come from. Only the SHA-256 hash of the token is stored.</li>
+                <li>When a backup is due, Salvor calls the module and presents the token. The module checks the token
+                    and the caller's address, then runs <code>pg_dump</code> (and packs the filestore for the zip
+                    format) in a background process on your server, into a temporary file.</li>
+                <li>Salvor polls until the archive is ready, downloads it in pieces of up to 256 MiB (a broken
+                    download resumes), compares its SHA-256 with the one your server computed, and asks the module
+                    to delete the file.</li>
             </ol>
-            <h4 style="color:#0d9488;">Security</h4>
+            <p>Your server never opens a connection to Salvor for a backup. Salvor asks; the module answers or refuses.</p>
+
+            <h4 style="color:#0d9488;">What the token can do</h4>
+            <p>With a valid token, from an allowed IP address, while the Connector is enabled:</p>
             <ul>
-                <li>Only a SHA-256 hash of the access token is stored; the token itself never appears in Odoo.</li>
-                <li>Every request must come from an allowed IP address and carry the token.</li>
-                <li>Backups are built by a background process on your server into a temporary file readable only by
-                    the Odoo user, downloaded by Salvor in resumable parts, and deleted right after (if never collected, up to about 7 hours later). The file is not
-                    encrypted while it exists;
-                    one backup at a time per database.</li>
-                <li><b>Restore drills through the connector are disabled in this version</b>; Salvor verifies
-                    backups on its own side. Drill databases left by earlier versions are dropped after 24 hours,
-                    on Disconnect, or with the Drop button.</li>
-                <li>Calls from Salvor (status polls excepted) are listed in <i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>
-                    (kept 90 days; refused calls are rate-limited to 30 rows per minute and kept 14 days).</li>
-                <li><b>Disconnect</b> revokes access immediately. Uninstalling removes all connector data.</li>
-                <li>Linux servers only.</li>
+                <li><b>Read basic facts</b> about this database: name, Odoo and module versions, database size,
+                    filestore size estimate, free disk in the Odoo data directory, protocol numbers and capabilities.</li>
+                <li><b>Start, poll, download and delete a backup of this database</b>: a PostgreSQL custom-format dump,
+                    or a standard Odoo backup zip (<code>dump.sql</code>, <code>filestore/</code>,
+                    <code>manifest.json</code>). One backup at a time, at most two stored.</li>
+                <li><b>Remove a leftover scratch database</b> that this module itself created for a restore drill
+                    under 2.0.0 or 2.0.1. The module checks its own record (name and database identity) first and
+                    refuses for any other database.</li>
             </ul>
-            <p>The only outbound connection the module makes is the single HTTPS pairing request when you click Connect.</p>
+            <p>
+                The older backup call from before 2.0 (a backup streamed inside one request) is still answered, with
+                the same checks; Salvor uses it only with a module older than 2.0. A backup is a complete copy of the
+                database: treat the right to download it as read access to everything in it.
+            </p>
+
+            <h4 style="color:#0d9488;">What the token cannot do</h4>
+            <ul>
+                <li>Log in to the live database. It is not a user, a session or an API key.</li>
+                <li>Create, duplicate, restore or drop databases through Odoo's database manager, or read or change
+                    the master password.</li>
+                <li>Back up a database it was not paired with, call from an address not on the allow list (an empty
+                    list refuses everyone), or work while the Connector is disabled or disconnected.</li>
+                <li>Change the module's settings, write to your data or run code on the server.</li>
+                <li>Start a restore drill: every drill call is answered with <code>410</code>, whatever is stored.</li>
+            </ul>
+
+            <h4 style="color:#0d9488;">Works on hardened servers</h4>
+            <ul>
+                <li><code>list_db = False</code>: works; the module does not use <code>/web/database/*</code>.</li>
+                <li>No master password: never asked for, stored or sent.</li>
+                <li><code>dbfilter</code> and reverse proxies: work. Behind a proxy set <code>proxy_mode = True</code>
+                    and keep Odoo's own port closed to the internet: the module trusts the last
+                    <code>X-Forwarded-For</code> entry (the token is still required).</li>
+                <li>Without a valid token the module gives one <code>401</code> answer for an unknown database, a
+                    database without the module, an unpaired one and a wrong token. Odoo itself can still reveal
+                    whether a database exists; allow <code>/salvor/</code> only from Salvor's address at nginx or the
+                    firewall if that matters to you.</li>
+            </ul>
+
+            <h4 style="color:#0d9488;">What leaves your server, and what stays</h4>
+            <ul>
+                <li>On <b>Connect</b> or <b>Rotate token</b>: the pairing code, <code>web.base.url</code>, the database
+                    name, Odoo and module versions and the protocol number, over HTTPS to Salvor. This is the only
+                    connection the module opens. No telemetry.</li>
+                <li>On Salvor's calls: the facts above, and the backup itself.</li>
+                <li><b>The temporary backup file is not encrypted.</b> It is readable only by the Odoo system account
+                    and exists until Salvor has downloaded it (normally minutes); if never collected, the hourly
+                    action deletes it, up to about 7 hours after the start.</li>
+                <li>The <b>Pull Log</b> (<i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>, administrators only)
+                    records calls and refusals; successful status polls are not logged one by one. Kept 90 days;
+                    refusals 14 days, at most 30 rows a minute, and evicted first at the 200,000-row cap.</li>
+            </ul>
+
+            <h4 style="color:#0d9488;">How to revoke access</h4>
+            <ul>
+                <li><b>Disconnect</b>: the token hash and the allow list are cleared, a running backup is stopped and
+                    its file deleted, leftover drill databases are dropped.</li>
+                <li>Untick <b>Enabled</b>, or empty <b>Allowed IPs</b>: every call is refused.</li>
+                <li>In Salvor: <i>Revoke access</i> or <i>Rotate token</i>.</li>
+                <li><b>Uninstall</b>: stops the module's jobs, deletes its files and drops the drill databases it
+                    created; one that is busy at that moment can remain and is logged, so check for databases
+                    named <code>salvor_drill_*</code> afterwards.</li>
+            </ul>
+            <p>A copy of the database made with Odoo's <i>neutralize</i> option unpairs itself; a plain copy keeps the
+                pairing, so click Disconnect in it.</p>
+
+            <h4 style="color:#0d9488;">Leftovers from 2.0.0 or 2.0.1</h4>
+            <p>
+                A scratch database (<code>salvor_drill_...</code>) that a drill under 2.0.0 or 2.0.1 left behind is a
+                full copy of production, logins included. While one exists, the settings form shows a warning with a
+                <b>Drop them now</b> button. The hourly action drops it after 24 hours (6 if its upload or restore
+                never finished), and Disconnect drops it too. The module removes only databases it created and still
+                has on record; check for others by hand.
+            </p>
+
+            <h4 style="color:#0d9488;">Requirements</h4>
+            <ul>
+                <li>Self-hosted Odoo 17, 18, 19 or 20 <b>on Linux</b> (Community or Enterprise). Not Odoo Online;
+                    Odoo.sh is not a supported target.</li>
+                <li><code>pg_dump</code> on the Odoo server, same or newer major version than PostgreSQL.</li>
+                <li>Odoo reachable over HTTPS from Salvor, with <code>web.base.url</code> set to its public
+                    <code>https://</code> address. On Odoo 17 and 18 the URL must lead to exactly one database.</li>
+                <li>The database owned by the PostgreSQL role Odoo uses.</li>
+                <li>Free disk in the Odoo data directory: database size (+ filestore for the zip format) + 256 MiB.</li>
+                <li>Each download piece is a normal Odoo request bound by <code>limit_time_real</code>; on a link slower
+                    than about 2 MiB/s, raise it.</li>
+            </ul>
         </div>
     </div>
 </section>
