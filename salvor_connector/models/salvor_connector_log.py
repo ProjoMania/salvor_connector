@@ -8,7 +8,9 @@ MAX_ROWS = 200000
 
 
 class SalvorConnectorLog(models.Model):
-    """One row per call Salvor makes to this database (and every refusal).
+    """One row per call Salvor makes to this database, and refusals for it:
+    at most 30 refusal rows per minute (more go to the server log only), and
+    none for a call naming a database that does not host the connector.
     Never contains the token or its hash."""
     _name = "salvor.connector.log"
     _description = "Salvor Connector Pull Log"

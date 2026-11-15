@@ -18,9 +18,10 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.2 (`NN.0.2.0.2`) | `30fb87c` → `17.0-2.0.2` | `9d99f74` → `18.0-2.0.2` | `7c4b8ba` → `19.0-2.0.2` | `cefeee7` → `20.0-2.0.2` | not exploitable (drill routes 410 first; code unreachable) |
 | 2.0.3 (`NN.0.2.0.3`) | `8fbc061` → `17.0-2.0.3` | `738bc80` → `18.0-2.0.3` | `ea97e4c` → `19.0-2.0.3` | `84c0e10` → `20.0-2.0.3` | not exploitable |
 | 2.0.4 (`NN.0.2.0.4`) | `dae780e` → `17.0-2.0.4` | `be2c540` → `18.0-2.0.4` | `d6090d7` → `19.0-2.0.4` | `662deda` → `20.0-2.0.4` | **fixed**: restore code removed |
-| 2.0.5 (`NN.0.2.0.5`) | 2.0.5 commit on `17.0` → `17.0-2.0.5` | on `18.0` → `18.0-2.0.5` | on `19.0` → `19.0-2.0.5` | on `20.0` → `20.0-2.0.5` | fixed; stubs authenticated |
+| 2.0.5 (`NN.0.2.0.5`) | `4b789d4` → `17.0-2.0.5` | `7a2a988` → `18.0-2.0.5` | `e16bc02` → `19.0-2.0.5` | `dd9c753` → `20.0-2.0.5` | fixed; stubs authenticated |
+| 2.0.6 (`NN.0.2.0.6`) | 2.0.6 commit on `17.0` → `17.0-2.0.6` | on `18.0` → `18.0-2.0.6` | on `19.0` → `19.0-2.0.6` | on `20.0` → `20.0-2.0.6` | fixed; body limit on every route, reporting paths |
 
-The 2.0.5 hashes are the branch heads after the 2.0.5 commit (reported with the commit; this file
+The 2.0.6 hashes are the branch heads after the 2.0.6 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:
