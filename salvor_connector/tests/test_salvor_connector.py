@@ -495,21 +495,29 @@ class TestSalvorConnector(HttpCase):
 
     def test_restore_preamble_filter(self):
         from .. import jobrunner
-        sql = (b"SET statement_timeout = 0;\nSET transaction_timeout = 0;\nSET lock_timeout = 0;\n"
-               b"CREATE TABLE t (x text);\nCOPY t (x) FROM stdin;\nSET transaction_timeout = 0;\n\\.\n")
-        self.assertEqual(jobrunner.unsupported_settings(160004), {b"transaction_timeout"})
+        drop = {b"transaction_timeout"}
+        self.assertEqual(jobrunner.unsupported_settings(160004), drop)
         self.assertEqual(jobrunner.unsupported_settings(170000), set())
-        out = b"".join(jobrunner.filter_preamble(iter([sql[:20], sql[20:]]), {b"transaction_timeout"}))
-        self.assertNotIn(b"SET transaction_timeout = 0;\nSET lock_timeout", out)
-        self.assertIn(b"SET lock_timeout = 0;", out)
-        self.assertIn(b"CREATE TABLE t", out)
+        sql = (b"--\n-- PostgreSQL database dump\n--\n\n\\restrict abc\n"
+               b"SET statement_timeout = 0;\nSET transaction_timeout = 0;\n"
+               b"SELECT pg_catalog.set_config('search_path', '', false);\n\n"
+               b"CREATE TABLE public.salvor_ut_t (x text);\n"
+               b"COPY public.salvor_ut_t (x) FROM stdin;\nSET transaction_timeout = 0;\n\\.\n")
+        for size in (1, 7, 64, len(sql)):  # any chunking gives the same result
+            out = b"".join(jobrunner.filter_preamble(
+                iter([sql[i:i + size] for i in range(0, len(sql), size)]), drop))
+            self.assertEqual(out, sql.replace(b"SET transaction_timeout = 0;\nSELECT", b"SELECT"))
         self.assertEqual(b"".join(jobrunner.filter_preamble(iter([sql]), set())), sql)
-        # beyond the preamble window the stream is passed through byte for byte
-        big = b"SET transaction_timeout = 0;\n" + b"x" * (jobrunner.PREAMBLE_BYTES + 10) + b"\nSET transaction_timeout = 0;\n"
-        out = b"".join(jobrunner.filter_preamble(iter([big[i:i + 4096] for i in range(0, len(big), 4096)]),
-                                                 {b"transaction_timeout"}))
-        self.assertFalse(out.startswith(b"SET transaction_timeout"))
-        self.assertTrue(out.endswith(b"\nSET transaction_timeout = 0;\n"))
+        # the COPY data row that looks like the setting survives a real restore
+        name = drill_name("ut_pre")
+        self.addCleanup(self._force_drop, name)
+        tools.create_drill_db(name)
+        out = b"".join(jobrunner.filter_preamble(iter([sql]), drop)).replace(b"\\restrict abc\n", b"")
+        subprocess.run([find_pg_tool("psql"), "-q", "-X", "-1", "-v", "ON_ERROR_STOP=1", "--dbname=" + name],
+                       input=out, env=exec_pg_environ(), check=True, capture_output=True)
+        with closing(psycopg2.connect(dbname=name, **self._pg_kwargs())) as cnx, cnx.cursor() as cr:
+            cr.execute("SELECT x FROM public.salvor_ut_t")
+            self.assertEqual(cr.fetchall(), [("SET transaction_timeout = 0;",)])
 
     def test_drill_reports_the_real_psql_error(self):
         """psql stops on the first error (ON_ERROR_STOP): the job reports psql's

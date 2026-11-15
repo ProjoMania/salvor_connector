@@ -1,14 +1,19 @@
 """Restore a pg_dump-18 archive with jobrunner.run_restore into older servers (PG 14/15/16 in Docker,
 ports 165NN, role odoo with CREATEDB, source db salvor_ws3_src installed on each). Usage:
-  python e2e/pg_client_server_skew.py <workdir> 14 15 16"""
+  ODOO_ADDONS=<odoo>/odoo/addons:<odoo>/addons python e2e/pg_client_server_skew.py <workdir> 14 15 16
+Targets are named salvor_drill_x<TAG>_<ver>_<kind> (TAG env, default n): use a new TAG per run."""
 import json, os, subprocess, sys, tempfile, zipfile
-sys.path.insert(0, os.environ.get("RUNNER_DIR", "/home/moh/Projects/salvor_connector/salvor_connector"))
+import shutil
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.environ.get("RUNNER_DIR", os.path.join(HERE, "..", "salvor_connector")))
 import jobrunner  # stdlib + psycopg2 only
 
 SRC = "salvor_ws3_src"
 work = tempfile.mkdtemp(dir=sys.argv[1])
 neut = {}
-for base in ("/home/moh/OdooProjects/Odoo19/odoo/odoo/addons", "/home/moh/OdooProjects/Odoo19/odoo/addons"):
+# ODOO_ADDONS: os.pathsep-separated addons paths whose data/neutralize.sql files to run
+for base in os.environ["ODOO_ADDONS"].split(os.pathsep):
     for m in os.listdir(base):
         p = os.path.join(base, m, "data", "neutralize.sql")
         if os.path.isfile(p):
@@ -27,11 +32,10 @@ for ver in sys.argv[2:]:
         z.writestr("manifest.json", "{}")
     for kind, arch in (("dump", dump), ("zip", zpath)):
         target = "salvor_drill_x%s_%s_%s" % (os.environ.get("TAG", "n"), ver, kind)
-        pass
         subprocess.run(["psql", "-q", "-d", "postgres", "-c", 'CREATE DATABASE "%s"' % target], env={**os.environ, **env}, check=True)
         jd = tempfile.mkdtemp(dir=work)
         subprocess.run(["cp", arch, os.path.join(jd, "archive")], check=True)
-        spec = {"kind": "restore", "target": target, "pg_restore": "/usr/bin/pg_restore", "psql": "/usr/bin/psql",
+        spec = {"kind": "restore", "target": target, "pg_restore": shutil.which("pg_restore"), "psql": shutil.which("psql"),
                 "filestore_dest": os.path.join(work, "fs_" + target), "neutralize_sql": neut, "pg_env": env}
         json.dump(spec, open(os.path.join(jd, "job.json"), "w"))
         job = jobrunner.Job(jd)
