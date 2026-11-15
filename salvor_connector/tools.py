@@ -17,8 +17,9 @@ import zipfile
 from odoo.tools import config
 from odoo.tools.misc import exec_pg_environ, find_pg_tool
 
-PROTOCOL_VERSION = 2
-# v1 endpoints stay served for Salvor workers that predate v2.
+# info.protocol stays 1 (the baseline every deployed Salvor accepts); v2 is
+# advertised through PROTOCOLS_SUPPORTED + CAPABILITIES. v1 endpoints stay served.
+PROTOCOL_VERSION = 1
 PROTOCOLS_SUPPORTED = [1, 2]
 CAPABILITIES = ["backup_job", "range_download", "drill_upload", "drill_owned", "drill_neutralize", "audit_log"]
 JOB_TTL_HOURS_DEFAULT = 6
@@ -330,7 +331,7 @@ def spawn_runner(path, spec, lock=None):
     proc = subprocess.Popen(args, cwd=path, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=pass_fds,
                             env=_runner_env())
-    write_state(path, pid=proc.pid)
+    write_state(path, pid=proc.pid, pid_start=proc_start_time(proc.pid))
     if lock is not None:
         lock.detach()
 
@@ -379,30 +380,53 @@ def sweep_jobs(dbname, ttl_hours):
         if state.get("state") in ("starting", "running") and pid_alive(state.get("pid")):
             if age < 2 * ttl_hours * 3600:
                 continue
-            terminate(state.get("pid"))
+            terminate_state(state)
         remove_tree(path)
         removed += 1
     return removed
 
 
-def terminate(pid, timeout=30):
-    if not pid_alive(pid):
+def proc_start_time(pid):
+    """Kernel start time of a process (/proc/<pid>/stat field 22), or None."""
+    try:
+        with open("/proc/%d/stat" % int(pid), encoding="ascii") as fh:
+            return int(fh.read().rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_our_runner(pid, pid_start):
+    """True only if pid is still the jobrunner we started (same start time and
+    command line) — a recycled pid is never signalled."""
+    if not pid or not pid_start or proc_start_time(pid) != pid_start:
+        return False
+    try:
+        with open("/proc/%d/cmdline" % int(pid), "rb") as fh:
+            return b"jobrunner.py" in fh.read()
+    except OSError:
+        return False
+
+
+def terminate(pid, timeout=30, pid_start=None):
+    """Stop a runner (its whole session) — only after verifying it is ours."""
+    if not is_our_runner(pid, pid_start):
         return
     try:
         os.killpg(int(pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        try:
-            os.kill(int(pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
+        return
     deadline = time.time() + timeout
     while time.time() < deadline and pid_alive(pid):
         time.sleep(0.2)
-    if pid_alive(pid):
+    if pid_alive(pid) and is_our_runner(pid, pid_start):
         try:
             os.killpg(int(pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+
+
+def terminate_state(state):
+    terminate(state.get("pid"), pid_start=state.get("pid_start"))
 
 
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
@@ -481,3 +505,17 @@ def create_drill_db(name):
             cr.execute(query, log_exceptions=False)
         except psycopg2.errors.DuplicateDatabase:
             raise DatabaseExistsConflict(name) from None
+        cr.execute("SELECT oid FROM pg_database WHERE datname = %s", (name,))
+        return str(cr.fetchone()[0])
+
+
+def db_oid(name):
+    """pg_database.oid of name (as text), or None if it does not exist."""
+    from contextlib import closing
+
+    import odoo
+
+    with closing(odoo.sql_db.db_connect(system_db()).cursor()) as cr:
+        cr.execute("SELECT oid FROM pg_database WHERE datname = %s", (name,))
+        row = cr.fetchone()
+        return str(row[0]) if row else None

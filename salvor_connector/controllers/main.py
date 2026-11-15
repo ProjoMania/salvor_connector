@@ -83,19 +83,7 @@ def _module_installed_raw(dbname):
         return False
 
 
-_REFUSALS = {}
 REFUSALS_PER_MINUTE = 30
-
-
-def _refusal_budget(dbname):
-    """At most REFUSALS_PER_MINUTE refused-call rows per db per minute per
-    process, so an unauthenticated caller cannot grow the log table at will."""
-    minute = int(time.time() // 60)
-    key = (dbname, minute)
-    if len(_REFUSALS) > 1000:
-        _REFUSALS.clear()
-    _REFUSALS[key] = _REFUSALS.get(key, 0) + 1
-    return _REFUSALS[key] <= REFUSALS_PER_MINUTE
 
 
 class SalvorConnectorController(http.Controller):
@@ -148,13 +136,18 @@ class SalvorConnectorController(http.Controller):
         _logger.info("salvor_connector %s -> %s %s from %s %s", endpoint, status, result, addr, detail or "")
         if not dbname:
             return
-        if status >= 400 and not _refusal_budget(dbname):
-            return  # flood of refusals: server log only, the table stays bounded
         try:
             registry = Registry.registries[dbname] if dbname in Registry.registries else None
             if registry is None or LOG_MODEL not in registry:
                 return
             with registry.cursor() as cr:
+                if status >= 400:
+                    # at most REFUSALS_PER_MINUTE refusal rows per db per minute, counted
+                    # in the db itself (all workers share it): floods go to the server log only
+                    cr.execute("SELECT count(*) FROM salvor_connector_log WHERE http_status >= 400 "
+                               "AND date > (now() at time zone 'UTC') - interval '1 minute'")
+                    if cr.fetchone()[0] >= REFUSALS_PER_MINUTE:
+                        return
                 env = api.Environment(cr, SUPERUSER_ID, {})
                 env[LOG_MODEL].sudo().create({
                     "endpoint": endpoint,
@@ -418,7 +411,7 @@ class SalvorConnectorController(http.Controller):
             job_id, path = self._job(dbname)
             state = tools.read_state(path)
             if state.get("state") in ("starting", "running"):
-                tools.terminate(state.get("pid"))
+                tools.terminate_state(state)
             tools.remove_tree(path)
             self._audit(dbname, "backup/cleanup", 200, job_id=job_id)
             return _json({"ok": True, "job_id": job_id})
@@ -437,7 +430,18 @@ class SalvorConnectorController(http.Controller):
             env[DRILL_MODEL].browse(rec_id).write(vals)
 
     def _drill_owned(self, registry, name):
+        """Ownership = our record for that name AND the very database we created
+        (same pg_database.oid). A name freed and re-created by someone else is
+        not ours: the stale record is closed and the call refused."""
         rec_id, state = self._drill_record(registry, name)
+        if rec_id:
+            with registry.cursor() as cr:
+                cr.execute("SELECT pg_oid FROM salvor_connector_drill WHERE id = %s", (rec_id,))
+                stored = cr.fetchone()[0]
+            if not stored or tools.db_oid(name) != stored:
+                self._drill_write(registry, rec_id, state="dropped", dropped_at=fields.Datetime.now(),
+                                  error="database gone or replaced outside the connector")
+                rec_id = None
         if not rec_id:
             # Not created by THIS database's connector: refuse, whatever exists on the cluster.
             raise SalvorError(404, "db_not_found", "No drill database of that name was created by this connector")
@@ -455,13 +459,14 @@ class SalvorConnectorController(http.Controller):
         if self._drill_record(registry, name)[0]:
             raise SalvorError(409, "drill_exists", "This drill database already exists; drop it first")
         try:
-            tools.create_drill_db(name)
+            oid = tools.create_drill_db(name)
         except tools.DatabaseExistsConflict:
             raise SalvorError(409, "drill_exists", "A database with this name already exists") from None
         try:
             with registry.cursor() as cr:
                 env = api.Environment(cr, SUPERUSER_ID, {})
-                rec_id = env[DRILL_MODEL].create({"name": name, "state": "uploading", "archive_bytes": size}).id
+                rec_id = env[DRILL_MODEL].create({"name": name, "state": "uploading", "archive_bytes": size,
+                                                  "pg_oid": oid}).id
         except Exception:
             dbcompat.drop_drill(name)  # we created it a moment ago; nothing else can own it
             raise
@@ -711,7 +716,7 @@ class SalvorConnectorController(http.Controller):
         path = tools.drill_dir(dbname, name)
         state = tools.read_state(path)
         if state.get("state") in ("starting", "running"):
-            tools.terminate(state.get("pid"))
+            tools.terminate_state(state)
         lock = DbLock(name)
         deadline = time.time() + 30
         while not lock.acquire():
@@ -719,7 +724,14 @@ class SalvorConnectorController(http.Controller):
                 raise SalvorError(409, "busy", "This drill database is busy")
             time.sleep(0.5)
         try:
-            if dbcompat.pg_db_exists(name):
+            with registry.cursor() as cr:
+                cr.execute("SELECT pg_oid FROM salvor_connector_drill WHERE id = %s", (rec_id,))
+                stored = cr.fetchone()[0]
+            current = tools.db_oid(name)
+            if current and current != stored:
+                # re-checked under the lock: never drop a database we did not create
+                raise SalvorError(404, "db_not_found", "No drill database of that name was created by this connector")
+            if current:
                 dbcompat.drop_drill(name)
             tools.remove_tree(path)
             self._drill_write(registry, rec_id, state="dropped", dropped_at=fields.Datetime.now())
