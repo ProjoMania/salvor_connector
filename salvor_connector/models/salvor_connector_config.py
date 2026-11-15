@@ -28,6 +28,14 @@ class SalvorConnectorConfig(models.Model):
         string="Allowed IPs", copy=False,
         help="Salvor source addresses or CIDR ranges, comma or newline separated. "
              "Requests from any other address are refused (empty = refuse all).")
+    # Not a setting any more (restore drills were removed in 2.0.4). The field stays so the
+    # settings form of an older version, still in the database between the Odoo restart and
+    # -u salvor_connector, renders instead of crashing the web client. Always false.
+    drill_enabled = fields.Boolean(string="Allow restore drills (removed)", compute="_compute_drill_enabled")
+
+    def _compute_drill_enabled(self):
+        for rec in self:
+            rec.drill_enabled = False
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")

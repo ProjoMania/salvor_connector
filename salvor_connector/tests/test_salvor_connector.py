@@ -108,7 +108,7 @@ class TestSalvorConnector(HttpCase):
         over 1 KiB."""
         from .. import jobrunner
         self.assertFalse(hasattr(jobrunner, "run_restore") or hasattr(jobrunner, "PsqlGuard"))
-        self.assertNotIn("drill_enabled", self.cfg._fields)
+        self.assertFalse(self.cfg.drill_enabled)  # kept only for pre-upgrade views; always off
         log = self.env["salvor.connector.log"].sudo()
         drills_root = os.path.join(tools.config["data_dir"], "salvor_connector", "drills", self.dbname)
         before = os.path.exists(drills_root)
@@ -144,6 +144,25 @@ class TestSalvorConnector(HttpCase):
                                     headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN,
                                              "Content-Type": "application/octet-stream"})
             self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
+
+    def test_big_bodies_refused_before_auth(self):
+        """2.0.6: every working route refuses a body over 64 KiB (form or multipart
+        included) with 413 before Odoo parses it, with or without a token."""
+        big = b"x" * (128 * 1024)
+        for ep in ("info", "backup", "backup/start", "backup/status", "backup/download",
+                   "backup/cleanup", "drop"):
+            for token in (None, TOKEN):
+                headers = {"X-Salvor-Db": self.dbname}
+                if token:
+                    headers["Authorization"] = "Bearer " + token
+                resp = self.opener.post(self.base_url() + "/salvor/v1/" + ep, headers=headers, timeout=60,
+                                        files={"f": ("a.bin", big)})
+                self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
+                resp = self.opener.post(self.base_url() + "/salvor/v1/" + ep, headers=headers, timeout=60,
+                                        data={"f": big.decode()})
+                self.assertEqual(resp.status_code, 413, "%s form %s" % (ep, resp.text[:200]))
+        # a normal JSON call still works
+        self.assertEqual(self._post("info").status_code, 200)
 
     def test_drop_leftovers_needs_admin(self):
         user = self.env["res.users"].create({"name": "salvor ut user", "login": "salvor_ut_user_%s" % RUN,

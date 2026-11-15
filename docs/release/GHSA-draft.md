@@ -49,7 +49,8 @@ the restore code is unreachable). Fixed: 2.0.4 (restore code removed). Exact com
 - Salvor (the service) refuses to pair or back up through connectors below 2.0.2.
 
 ## Patches
-Upgrade to 2.0.4: pull the branch (or tag `<series>-2.0.4`), restart Odoo, upgrade the module.
+Upgrade to the latest version (2.0.6; 2.0.4 or later fixes the issue): pull the branch (signed tags
+`<series>-<version>`: tag to be created), restart Odoo, upgrade the module.
 
 ## Credits
 Found in internal review (ProjoMania).
