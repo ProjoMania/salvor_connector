@@ -1,10 +1,12 @@
 # Security policy and advisories
 
-Report a vulnerability privately by email to **info@salvorcloud.com** (subject "Security"). Please do
-not file public issues for security problems. GitHub private vulnerability reporting is not enabled on
-this repository yet; once it is, **Security → Report a vulnerability** will work too.
+Report a vulnerability privately, either way:
+- **GitHub private vulnerability reporting**: on this repository, **Security → Report a vulnerability**;
+- **email** to **security@salvorcloud.com**.
 
-Releases will be signed tags `<odoo series>-<module version>` (e.g. `19.0-2.0.5`), with a GitHub
+Please do not file public issues for security problems.
+
+Releases will be signed tags `<odoo series>-<module version>` (e.g. `19.0-2.0.6`), with a GitHub
 release per tag; until they exist, install from the branch head. Advisories will be listed under
 **Security → Advisories**.
 
@@ -23,7 +25,7 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to 2.0.5 (2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to 2.0.6, the latest version (2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
