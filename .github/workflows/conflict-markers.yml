@@ -4,6 +4,9 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # GitHub can skip push events when one push carries several branches and tags at
+  # once; run it by hand per branch with: gh workflow run conflict-markers.yml --ref <branch>
+  workflow_dispatch:
 
 permissions:
   contents: read
