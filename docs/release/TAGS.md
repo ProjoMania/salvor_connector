@@ -1,7 +1,9 @@
-# Release tags (prepared, NOT created)
+# Release tags
 
-Signed annotated tags, one per branch and version: `<odoo series>-<module version>`. Create with
-`git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`; push only after review.
+Signed annotated tags, one per branch and version: `<odoo series>-<module version>`, SSH-signed and
+shown as *Verified* on GitHub. **Created: 2.0.4, 2.0.5 and 2.0.6 on all four branches.** Tags for 1.0.0
+to 2.0.3 below are not created (historical reference only). Create a new one with
+`git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`.
 
 The commit for each version is the last commit before the next version bump (a version bump commit
 and its follow-ups share one module version). For every version except 2.0.1 that commit was the
@@ -19,9 +21,10 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.3 (`NN.0.2.0.3`) | `8fbc061` → `17.0-2.0.3` | `738bc80` → `18.0-2.0.3` | `ea97e4c` → `19.0-2.0.3` | `84c0e10` → `20.0-2.0.3` | not exploitable |
 | 2.0.4 (`NN.0.2.0.4`) | `dae780e` → `17.0-2.0.4` | `be2c540` → `18.0-2.0.4` | `d6090d7` → `19.0-2.0.4` | `662deda` → `20.0-2.0.4` | **fixed**: restore code removed |
 | 2.0.5 (`NN.0.2.0.5`) | `4b789d4` → `17.0-2.0.5` | `7a2a988` → `18.0-2.0.5` | `e16bc02` → `19.0-2.0.5` | `dd9c753` → `20.0-2.0.5` | fixed; stubs authenticated |
-| 2.0.6 (`NN.0.2.0.6`) | 2.0.6 commit on `17.0` → `17.0-2.0.6` | on `18.0` → `18.0-2.0.6` | on `19.0` → `19.0-2.0.6` | on `20.0` → `20.0-2.0.6` | fixed; body limit on every route, reporting paths |
+| 2.0.6 (`NN.0.2.0.6`) | `ae92319` → `17.0-2.0.6` | `081c377` → `18.0-2.0.6` | `ab8dc36` → `19.0-2.0.6` | `fe901a2` → `20.0-2.0.6` | fixed; body limit on every route, reporting paths |
+| 2.0.7 (`NN.0.2.0.7`) | 2.0.7 commit on `17.0` → `17.0-2.0.7` | on `18.0` → `18.0-2.0.7` | on `19.0` → `19.0-2.0.7` | on `20.0` → `20.0-2.0.7` | fixed; docs and store metadata only |
 
-The 2.0.6 hashes are the branch heads after the 2.0.6 commit (reported with the commit; this file
+The 2.0.7 hashes are the branch heads after the 2.0.7 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:
