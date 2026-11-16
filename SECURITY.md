@@ -9,7 +9,11 @@ backups) write to **support@salvorcloud.com**.
 
 Releases are signed tags `<odoo series>-<module version>` (SSH-signed, shown as *Verified* on GitHub),
 from 2.0.4 on: `17.0-2.0.4` … `20.0-2.0.6`, and one per later version. Pin a tag to control what you
-install (`git verify-tag <tag>` checks the signature). Advisories are listed under
+install. Signing key: ED25519 `SHA256:xZlGFj2cTC7LTGMxb0YDlfE1J+GC1gakO807ffiw0VE` (comment
+"salvor_connector release signing", identity `security@salvorcloud.com`). To check a tag, put that key
+in an allowed-signers file (`security@salvorcloud.com ssh-ed25519 AAAA...`), set
+`git config gpg.ssh.allowedSignersFile <file>`, then run `git verify-tag <tag>`; compare the
+fingerprint it prints with the one above. Advisories are listed under
 **Security → Advisories**.
 
 ## Advisory SC-2026-01: restore drills could run psql meta-commands
@@ -21,13 +25,13 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 |---|---|
 | Component | `salvor_connector`, restore-drill feature |
 | Affected | **1.0.0**: `/salvor/v1/restore` pipes the archive's SQL through `psql` when *Allow restore drills* is on. **2.0.0**: drill restore via `psql`, with no meta-command guard. **2.0.1**: a guard is in place, but it failed review (it can be bypassed). |
-| Not affected | **2.0.2 and 2.0.3**: every drill route raises 410 before doing any work; the restore code is still shipped but unreachable. |
+| Not affected | **2.0.2 and 2.0.3** (the GitHub advisory lists 2.0.2 as "patched": not exploitable from 2.0.2, while the code itself was removed in 2.0.4): every drill route raises 410 before doing any work; the restore code is still shipped but unreachable. |
 | Fixed | **2.0.4**: the restore code is removed from the module. The drill routes are stubs that answer 410 `drills_removed` without reading the request body. **2.0.5**: the stubs check token, IP and enabled first, like every other route, and refuse any body over 1 KiB. |
 | Preconditions | All three: a valid connector token, a request from an allowed IP address, and restore drills switched **on** (they are off by default). |
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to the latest version (2.0.7; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to the latest version (2.0.8; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
