@@ -1,6 +1,8 @@
 import hashlib
 import io
 import os
+
+import requests
 import subprocess
 import tempfile
 import time
@@ -144,6 +146,31 @@ class TestSalvorConnector(HttpCase):
                                     headers={"X-Salvor-Db": self.dbname, "Authorization": "Bearer " + TOKEN,
                                              "Content-Type": "application/octet-stream"})
             self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
+
+    def test_chunked_bodies_refused_before_auth(self):
+        """2.0.10: a body without Content-Length (Transfer-Encoding: chunked) over a
+        route's limit gets 413 before it is parsed and before the token check, on a
+        removed drill route (1 KiB) and on a working route (64 KiB)."""
+        def chunks(total, piece=8192):
+            yield b"a="
+            sent = 2
+            while sent < total:
+                yield b"x" * min(piece, total - sent)
+                sent += piece
+        for ep, size in (("drill/start", 4096), ("info", 128 * 1024), ("backup/status", 128 * 1024)):
+            for token in (None, TOKEN):
+                headers = {"X-Salvor-Db": self.dbname, "Content-Type": "application/x-www-form-urlencoded"}
+                if token:
+                    headers["Authorization"] = "Bearer " + token
+                try:
+                    resp = self.opener.post(self.base_url() + "/salvor/v1/" + ep, data=chunks(size),
+                                            headers=headers, timeout=60)
+                except requests.exceptions.ConnectionError:
+                    continue  # the server answered 413 and closed before the upload finished
+                self.assertEqual(resp.status_code, 413, "%s chunked %s" % (ep, resp.text[:200]))
+        # normal requests are unaffected
+        self.assertEqual(self._post("info").status_code, 200)
+        self._assert_error(self._post("drill/start", json={}), 410, "drills_removed")
 
     def test_no_merge_conflict_markers(self):
         """2.0.8: a store page shipped with conflict markers (2.0.6/2.0.7 on 17.0, 18.0, 20.0)."""

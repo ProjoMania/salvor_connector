@@ -11,7 +11,8 @@
             <p>
                 Always use the latest version. If you are upgrading from 1.0.0, 2.0.0 or 2.0.1, pair the module
                 again after upgrading. Details:
-                <a href="https://github.com/ProjoMania/salvor_connector/blob/20.0/SECURITY.md">SECURITY.md</a>.
+                <a href="https://github.com/ProjoMania/salvor_connector/blob/20.0/SECURITY.md">SECURITY.md</a>
+                (github.com/ProjoMania/salvor_connector).
             </p>
 
             <img src="screenshot_2_settings_connected.png" alt="Salvor Connector settings, connected to Salvor"
@@ -153,11 +154,11 @@
 
             <h4 style="color:#0d9488;">Requirements</h4>
             <ul>
-                <li>Self-hosted Odoo 17, 18, 19 or 20 <b>on Linux</b> (Community or Enterprise). Not Odoo Online;
+                <li>Self-hosted Odoo 16, 17, 18, 19 or 20 <b>on Linux</b> (Community or Enterprise). Not Odoo Online;
                     Odoo.sh is not a supported target.</li>
                 <li><code>pg_dump</code> on the Odoo server, same or newer major version than PostgreSQL.</li>
                 <li>Odoo reachable over HTTPS from Salvor, with <code>web.base.url</code> set to its public
-                    <code>https://</code> address. On Odoo 17 and 18 the URL must lead to exactly one database.</li>
+                    <code>https://</code> address. On Odoo 16, 17 and 18 the URL must lead to exactly one database.</li>
                 <li>The database owned by the PostgreSQL role Odoo uses (or named in <code>db_name</code>).</li>
                 <li>Free disk in the Odoo data directory: database size (+ filestore for the zip format) + 256 MiB.</li>
                 <li>Each download piece is a normal Odoo request bound by <code>limit_time_real</code>; on a link slower

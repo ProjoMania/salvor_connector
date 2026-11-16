@@ -26,7 +26,7 @@ Support: **support@salvorcloud.com**.
 Salvor checks each archive's integrity (sha256); restore drills need a master-password or SSH
 connection. Leftover `salvor_drill_*` databases from 2.0.0/2.0.1 are still removed (see Security).
 
-Branches: `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
+Branches: `16.0` (from 2.0.10), `17.0`, `18.0`, `19.0`, `20.0`. **Linux only** (the background job uses `setsid`, `flock` and
 `/proc`); Odoo on Windows or macOS is not supported.
 
 ## Install
