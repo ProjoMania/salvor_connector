@@ -1,4 +1,4 @@
-"""Version-specific database helpers (Odoo 17.0 - 19.0: odoo.service.db).
+"""Version-specific database helpers (Odoo 16.0 - 19.0: odoo.service.db).
 
 odoo.service.db gates dump_db_manifest / restore_db / exp_drop behind
 ``list_db`` (check_db_management_enabled) and exp_drop/list_dbs only see the

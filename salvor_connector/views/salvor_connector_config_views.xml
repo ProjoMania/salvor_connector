@@ -7,20 +7,20 @@
             <form string="Salvor Connector" create="0" delete="0" duplicate="0">
                 <header>
                     <button name="action_connect" type="object" string="Connect" class="btn-primary"/>
-                    <button name="action_rotate" type="object" string="Rotate token" invisible="not is_paired"/>
+                    <button name="action_rotate" type="object" string="Rotate token" attrs="{'invisible': [('is_paired', '=', False)]}"/>
                     <button name="action_view_log" type="object" string="Pull log"/>
                     <button name="action_disconnect" type="object" string="Disconnect"
-                            invisible="not is_paired"
+                            attrs="{'invisible': [('is_paired', '=', False)]}"
                             confirm="Salvor will no longer be able to back up this database. Continue?"/>
                 </header>
                 <sheet>
                     <div class="oe_title">
                         <h1>Salvor Connector</h1>
                     </div>
-                    <div class="alert alert-success" role="status" invisible="not is_paired">
+                    <div class="alert alert-success" role="status" attrs="{'invisible': [('is_paired', '=', False)]}">
                         Connected to Salvor. Backups of this database can be taken by Salvor from the allowed IPs below.
                     </div>
-                    <div class="alert alert-danger" role="alert" invisible="not leftover_drill_count">
+                    <div class="alert alert-danger" role="alert" attrs="{'invisible': [('leftover_drill_count', '=', 0)]}">
                         A restore drill run by Salvor Connector 2.0.0 or 2.0.1 left
                         <b><field name="leftover_drill_count" readonly="1" class="oe_inline"/></b>
                         scratch database(s) named salvor_drill_* on this server: full copies of this database,
@@ -29,7 +29,7 @@
                                 class="btn-link" groups="base.group_system"
                                 confirm="Drop every drill database this connector created? Their data is deleted."/>
                     </div>
-                    <div class="alert alert-warning" role="status" invisible="is_paired">
+                    <div class="alert alert-warning" role="status" attrs="{'invisible': [('is_paired', '=', True)]}">
                         Not connected. In Salvor choose "Add database" then "Connector", paste the pairing code here and click Connect.
                     </div>
                     <group>
