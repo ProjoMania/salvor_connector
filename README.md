@@ -7,7 +7,7 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
 `docs/CONNECTOR-PROTOCOL.md` in the Salvor repo.
 
 ## Security advisory (SC-2026-01)
-**Upgrade to 2.0.6** (2.0.4 or later fixes it). Restore drills through the connector could run `psql` meta-commands.
+**Upgrade to the latest version** (2.0.4 or later fixes it). Restore drills through the connector could run `psql` meta-commands.
 - **Affected:** 1.0.0 (`/salvor/v1/restore` pipes archive SQL through `psql` when the drill switch is on);
   2.0.0 (drill restore via `psql`, no meta-command guard); 2.0.1 (guard in place, failed review).
 - **Preconditions:** a valid connector token, an allowed IP, and drills enabled (off by default).
@@ -19,7 +19,9 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
   *Upgrade* in Apps). Until then keep *Allow restore drills* off. From 1.0.0, 2.0.0 or 2.0.1, pair
   again after the upgrade (Salvor refuses those versions). Details: `SECURITY.md`.
 - **Report a vulnerability** privately: GitHub **Security → Report a vulnerability**, or email
-  security@salvorcloud.com.
+  security@salvorcloud.com. Advisory: [GHSA-qxmx-8p3v-m6x3](https://github.com/ProjoMania/salvor_connector/security/advisories/GHSA-qxmx-8p3v-m6x3).
+
+Support: **support@salvorcloud.com**.
 
 Salvor checks each archive's integrity (sha256); restore drills need a master-password or SSH
 connection. Leftover `salvor_drill_*` databases from 2.0.0/2.0.1 are still removed (see Security).
