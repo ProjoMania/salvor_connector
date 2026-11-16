@@ -8,12 +8,16 @@ Please do not file public issues for security problems. For anything else (insta
 backups) write to **support@salvorcloud.com**.
 
 Releases are signed tags `<odoo series>-<module version>` (SSH-signed, shown as *Verified* on GitHub),
-from 2.0.4 on: `17.0-2.0.4` … `20.0-2.0.6`, and one per later version. Pin a tag to control what you
-install. Signing key: ED25519 `SHA256:xZlGFj2cTC7LTGMxb0YDlfE1J+GC1gakO807ffiw0VE` (comment
-"salvor_connector release signing", identity `security@salvorcloud.com`). To check a tag, put that key
-in an allowed-signers file (`security@salvorcloud.com ssh-ed25519 AAAA...`), set
-`git config gpg.ssh.allowedSignersFile <file>`, then run `git verify-tag <tag>`; compare the
-fingerprint it prints with the one above. Advisories are listed under
+from 2.0.4 on: `17.0-2.0.4` … `20.0-2.0.9`, one per branch and version. Pin a tag to control what you
+install. Signing key: ED25519 `SHA256:xZlGFj2cTC7LTGMxb0YDlfE1J+GC1gakO807ffiw0VE`, identity
+`security@salvorcloud.com`. To check a tag, save this line as an allowed-signers file:
+
+```
+security@salvorcloud.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN4g4opiVfiLrGjrDcHCIU0ISTUQUbYADBmPb9K1k1f4
+```
+
+then run `git -c gpg.ssh.allowedSignersFile=<file> verify-tag <tag>`. It prints
+`Good "git" signature for security@salvorcloud.com with ED25519 key SHA256:xZlGFj2c...` . Advisories are listed under
 **Security → Advisories**.
 
 ## Advisory SC-2026-01: restore drills could run psql meta-commands
@@ -31,7 +35,7 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to the latest version (2.0.8; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to the latest version (2.0.9; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
