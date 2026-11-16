@@ -145,6 +145,22 @@ class TestSalvorConnector(HttpCase):
                                              "Content-Type": "application/octet-stream"})
             self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
 
+    def test_no_merge_conflict_markers(self):
+        """2.0.8: a store page shipped with conflict markers (2.0.6/2.0.7 on 17.0, 18.0, 20.0)."""
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        marker = re.compile(r"^(<<<<<<<|=======|>>>>>>>)( |$)", re.M)
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for fn in filenames:
+                if fn.endswith((".py", ".xml", ".html", ".csv", ".sql", ".md", ".txt", ".js", ".css")):
+                    path = os.path.join(dirpath, fn)
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        if marker.search(fh.read()):
+                            hits.append(os.path.relpath(path, root))
+        self.assertEqual(hits, [])
+
     def test_big_bodies_refused_before_auth(self):
         """2.0.6: every working route refuses a body over 64 KiB (form or multipart
         included) with 413 before Odoo parses it, with or without a token."""

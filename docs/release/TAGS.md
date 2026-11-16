@@ -1,7 +1,7 @@
 # Release tags
 
 Signed annotated tags, one per branch and version: `<odoo series>-<module version>`, SSH-signed and
-shown as *Verified* on GitHub. **Created: 2.0.4, 2.0.5 and 2.0.6 on all four branches.** Tags for 1.0.0
+shown as *Verified* on GitHub. **Created: 2.0.4, 2.0.5, 2.0.6 and 2.0.7 on all four branches.** Tags for 1.0.0
 to 2.0.3 below are not created (historical reference only). Create a new one with
 `git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`.
 
@@ -22,9 +22,10 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.4 (`NN.0.2.0.4`) | `dae780e` → `17.0-2.0.4` | `be2c540` → `18.0-2.0.4` | `d6090d7` → `19.0-2.0.4` | `662deda` → `20.0-2.0.4` | **fixed**: restore code removed |
 | 2.0.5 (`NN.0.2.0.5`) | `4b789d4` → `17.0-2.0.5` | `7a2a988` → `18.0-2.0.5` | `e16bc02` → `19.0-2.0.5` | `dd9c753` → `20.0-2.0.5` | fixed; stubs authenticated |
 | 2.0.6 (`NN.0.2.0.6`) | `ae92319` → `17.0-2.0.6` | `081c377` → `18.0-2.0.6` | `ab8dc36` → `19.0-2.0.6` | `fe901a2` → `20.0-2.0.6` | fixed; body limit on every route, reporting paths |
-| 2.0.7 (`NN.0.2.0.7`) | 2.0.7 commit on `17.0` → `17.0-2.0.7` | on `18.0` → `18.0-2.0.7` | on `19.0` → `19.0-2.0.7` | on `20.0` → `20.0-2.0.7` | fixed; docs and store metadata only |
+| 2.0.7 (`NN.0.2.0.7`) | `a74e235` → `17.0-2.0.7` | `5804305` → `18.0-2.0.7` | `a2f3825` → `19.0-2.0.7` | `a5d9d73` → `20.0-2.0.7` | fixed; docs and store metadata only (17.0/18.0/20.0 store page has merge-conflict markers; fixed in 2.0.8) |
+| 2.0.8 (`NN.0.2.0.8`) | 2.0.8 commit on `17.0` → `17.0-2.0.8` | on `18.0` → `18.0-2.0.8` | on `19.0` → `19.0-2.0.8` | on `20.0` → `20.0-2.0.8` | fixed; docs/store only |
 
-The 2.0.7 hashes are the branch heads after the 2.0.7 commit (reported with the commit; this file
+The 2.0.8 hashes are the branch heads after the 2.0.8 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:
