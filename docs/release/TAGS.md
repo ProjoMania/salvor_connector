@@ -2,7 +2,7 @@
 
 Signed annotated tags, one per branch and version: `<odoo series>-<module version>`, SSH-signed. Verify
 them with `git verify-tag` and the key in `SECURITY.md`; GitHub shows tags up to 2.0.8 as *Verified*.
-**Created: tags through 2.0.9 (2.0.4 to 2.0.9) on 17.0, 18.0, 19.0 and 20.0.** 16.0 gets tags from 2.0.10. Tags for 1.0.0
+**Created: tags through 2.0.10: 2.0.4 to 2.0.10 on 17.0, 18.0, 19.0 and 20.0; 2.0.10 on 16.0.** Tags for 1.0.0
 to 2.0.3 below are not created (historical reference only). Create a new one with
 `git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`.
 
@@ -26,9 +26,10 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.7 (`NN.0.2.0.7`) | `a74e235` → `17.0-2.0.7` | `5804305` → `18.0-2.0.7` | `a2f3825` → `19.0-2.0.7` | `a5d9d73` → `20.0-2.0.7` | fixed; docs and store metadata only (17.0/18.0/20.0 store page has merge-conflict markers; fixed in 2.0.8) |
 | 2.0.8 (`NN.0.2.0.8`) | `b134dc1` → `17.0-2.0.8` | `8d71913` → `18.0-2.0.8` | `b6f45c4` → `19.0-2.0.8` | `d84a2b1` → `20.0-2.0.8` | fixed; docs/store only |
 | 2.0.9 (`NN.0.2.0.9`) | `e722734` → `17.0-2.0.9` | `f52ea72` → `18.0-2.0.9` | `b329f40` → `19.0-2.0.9` | `d3d65d8` → `20.0-2.0.9` | fixed; docs/store/CI only |
-| 2.0.10 (`NN.0.2.0.10`) | 2.0.10 commit on `17.0` → `17.0-2.0.10` | on `18.0` → `18.0-2.0.10` | on `19.0` → `19.0-2.0.10` | on `20.0` → `20.0-2.0.10` | fixed; adds Odoo 16 (`16.0-2.0.10` on `16.0`) |
+| 2.0.10 (`NN.0.2.0.10`) | `83706b7` → `17.0-2.0.10` | `f43ab7e` → `18.0-2.0.10` | `d7d3de8` → `19.0-2.0.10` | `6809540` → `20.0-2.0.10` | fixed; chunked-body limit fix (GHSA-28rv-398c-r5xx); adds Odoo 16 (`c2793cd` → `16.0-2.0.10` on `16.0`) |
+| 2.0.11 (`NN.0.2.0.11`) | 2.0.11 commit on `17.0` → `17.0-2.0.11` | on `18.0` → `18.0-2.0.11` | on `19.0` → `19.0-2.0.11` | on `20.0` → `20.0-2.0.11` | fixed; chunked + Content-Length, no-database path, 16.0 uninstall (`16.0-2.0.11` on `16.0`) |
 
-The 2.0.10 hashes are the branch heads after the 2.0.10 commit (reported with the commit; this file
+The 2.0.11 hashes are the branch heads after the 2.0.11 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:

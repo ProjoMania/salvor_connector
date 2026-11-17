@@ -13,8 +13,8 @@ class IrHttp(models.AbstractModel):
         before Odoo parses a form or multipart body and before the token check.
 
         - A declared Content-Length over the limit: 413.
-        - No Content-Length but a body may follow (chunked transfer encoding, or a
-          server that marks the input as terminated): 413. werkzeug does not cap
+        - A chunked body (Transfer-Encoding: chunked, or a server that marks the
+          input as terminated), with or without a Content-Length: 413. werkzeug does not cap
           such a stream with ``max_content_length``, and these routes only take
           small bodies, which Salvor always sends with a Content-Length.
         - Otherwise the limit is set on the werkzeug request itself (Odoo 16 has
@@ -24,12 +24,12 @@ class IrHttp(models.AbstractModel):
         if limit and isinstance(limit, int) and rule.endpoint.routing.get("routes", [""])[0].startswith("/salvor/"):
             httprequest = request.httprequest
             environ = httprequest.environ
+            # chunked is refused whatever Content-Length says (a request may carry both)
+            chunked = "chunked" in (environ.get("HTTP_TRANSFER_ENCODING") or "").lower()
+            if chunked or environ.get("wsgi.input_terminated"):
+                raise RequestEntityTooLarge()
             length = httprequest.content_length
-            if length is None:
-                chunked = "chunked" in (environ.get("HTTP_TRANSFER_ENCODING") or "").lower()
-                if chunked or environ.get("wsgi.input_terminated"):
-                    raise RequestEntityTooLarge()
-            elif length > limit:
+            if length is not None and length > limit:
                 raise RequestEntityTooLarge()
             wrapped = getattr(httprequest, "_HTTPRequest__wrapped", None)
             if wrapped is not None:
