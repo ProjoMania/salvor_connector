@@ -1,6 +1,8 @@
 """Salvor Connector protocol endpoints, v1 + v2 (see docs/CONNECTOR-PROTOCOL.md).
 
-Every endpoint: POST only, auth="none", csrf=False, bearer token compared in
+Every endpoint: POST only, auth="public" (served only when a database is selected:
+Odoo never serves auth="public" routes on its no-database path, even when the
+module is loaded server-wide), csrf=False, bearer token compared in
 constant time against sha256(token) stored in the database named by
 X-Salvor-Db, source-IP allowlist, one backup at a time per database.
 
@@ -41,7 +43,7 @@ DRILL_MODEL = "salvor.connector.drill"
 MAX_STORED_JOBS = 2  # backup archives kept per database, the new one included
 # every working route takes at most a small JSON body: anything larger (a big form or multipart
 # upload) is refused with 413 by Odoo before it is parsed or spooled, and before auth
-ROUTE_OPTS = {"type": "http", "auth": "none", "csrf": False, "methods": ["POST"], "save_session": False,
+ROUTE_OPTS = {"type": "http", "auth": "public", "csrf": False, "methods": ["POST"], "save_session": False,
               "readonly": False, "max_content_length": MAX_JSON_BODY}
 # removed drill routes (410 stubs): refuse any body over 1 KiB before Odoo parses or spools it
 STUB_OPTS = dict(ROUTE_OPTS, max_content_length=1024)

@@ -36,7 +36,7 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to the latest version (2.0.10; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to the latest version (2.0.11; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`16.0`, `17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
@@ -49,3 +49,20 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 Salvor (the service) refuses to pair with, back up through or otherwise call any connector below 2.0.2.
 After upgrading from 1.0.0, 2.0.0 or 2.0.1, pair again: take a new pairing code in Salvor and click
 **Connect** on the module's settings form.
+
+## Advisory SC-2026-02: chunked request bodies bypassed the body-size limit
+
+GitHub advisory: [GHSA-28rv-398c-r5xx](https://github.com/ProjoMania/salvor_connector/security/advisories/GHSA-28rv-398c-r5xx) (affected ranges and severity as published there).
+
+| | |
+|---|---|
+| Component | `salvor_connector`, request handling of the `/salvor/` routes |
+| Affected | Versions before **2.0.10**: a body sent with `Transfer-Encoding: chunked` (no Content-Length) was not held to the per-route limit (where one existed: 1 KiB on the drill routes from 2.0.3, 64 KiB on the working routes from 2.0.6), so Odoo read and parsed it before the token check refused the call. |
+| Fixed | **2.0.10**: on every `/salvor/` route a chunked body or a declared Content-Length over the limit gets 413 before the body is parsed and before the token check (all branches, including the new 16.0). **2.0.11**: a chunked body is refused even when the request also carries a Content-Length, and the routes are no longer served on Odoo's no-database path when the module is loaded server-wide. |
+| Preconditions | Network access to the Odoo server's `/salvor/` routes; no token needed. |
+| Impact | Memory and CPU use on the Odoo server from large request bodies (denial of service). No data access. |
+
+### What to do
+Upgrade to 2.0.11 (pull your branch, restart Odoo, `-u salvor_connector`). Independently of the module,
+a reverse proxy that limits request bodies (nginx `client_max_body_size`) and restricts `/salvor/` to
+Salvor's IP addresses also contains it.

@@ -19,7 +19,8 @@ Protocol: Salvor Connector protocol **v2** (`info` reports `protocol: 1` for old
   *Upgrade* in Apps). Until then keep *Allow restore drills* off. From 1.0.0, 2.0.0 or 2.0.1, pair
   again after the upgrade (Salvor refuses those versions). Details: `SECURITY.md`.
 - **Report a vulnerability** privately: GitHub **Security → Report a vulnerability**, or email
-  security@salvorcloud.com. Advisory: [GHSA-qxmx-8p3v-m6x3](https://github.com/ProjoMania/salvor_connector/security/advisories/GHSA-qxmx-8p3v-m6x3).
+  security@salvorcloud.com. Advisories: [GHSA-qxmx-8p3v-m6x3](https://github.com/ProjoMania/salvor_connector/security/advisories/GHSA-qxmx-8p3v-m6x3)
+  (restore drills) and [GHSA-28rv-398c-r5xx](https://github.com/ProjoMania/salvor_connector/security/advisories/GHSA-28rv-398c-r5xx) (chunked request bodies).
 
 Support: **support@salvorcloud.com**.
 
