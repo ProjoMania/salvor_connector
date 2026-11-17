@@ -3,7 +3,13 @@ from . import controllers
 
 
 
-def uninstall_hook(env):
+def uninstall_hook(cr, registry):
+    """Odoo 16 calls the uninstall hook with (cr, registry); 17+ pass an env."""
+    from odoo import SUPERUSER_ID, api
+    _uninstall_cleanup(api.Environment(cr, SUPERUSER_ID, {}))
+
+
+def _uninstall_cleanup(env):
     """Clean up THIS database only: drop the drill databases it created (when
     the database with that name is still the one we created, same oid), stop
     its running jobs and delete its job and drill files. Lock files are left

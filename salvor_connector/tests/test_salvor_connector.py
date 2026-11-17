@@ -147,30 +147,84 @@ class TestSalvorConnector(HttpCase):
                                              "Content-Type": "application/octet-stream"})
             self.assertEqual(resp.status_code, 413, "%s %s" % (ep, resp.text[:200]))
 
+    SALVOR_ROUTES = ("info", "backup", "backup/start", "backup/status", "backup/download",
+                     "backup/cleanup", "drop", "drill/start", "drill/upload", "drill/restore",
+                     "drill/status", "restore")
+
+    def _raw_post(self, path, headers, body):
+        """Send one raw HTTP request; return the status code of the answer."""
+        import contextlib
+        from urllib.parse import urlsplit
+        url = urlsplit(self.base_url())
+        allow = getattr(self, "allow_requests", None)  # Odoo 19+: requests need the test cookie
+        with (allow() if allow else contextlib.nullcontext()):
+            return self._raw_send(url, path, headers, body)
+
+    def _raw_send(self, url, path, headers, body):
+        import socket
+        lines = ["POST %s HTTP/1.1" % path, "Host: %s" % url.netloc, "Connection: close"]
+        cookie = "; ".join("%s=%s" % (c.name, c.value) for c in self.opener.cookies)
+        if cookie:
+            lines.append("Cookie: " + cookie)
+        lines += ["%s: %s" % kv for kv in headers.items()]
+        with socket.create_connection((url.hostname, url.port), timeout=60) as sock:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
+            data = b""
+            while b"\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            status = int(data.split(b" ", 2)[1])
+        return status
+
     def test_chunked_bodies_refused_before_auth(self):
-        """2.0.10: a body without Content-Length (Transfer-Encoding: chunked) over a
-        route's limit gets 413 before it is parsed and before the token check, on a
-        removed drill route (1 KiB) and on a working route (64 KiB)."""
-        def chunks(total, piece=8192):
-            yield b"a="
-            sent = 2
-            while sent < total:
-                yield b"x" * min(piece, total - sent)
-                sent += piece
-        for ep, size in (("drill/start", 4096), ("info", 128 * 1024), ("backup/status", 128 * 1024)):
+        """2.0.10/2.0.11: on every /salvor/ route a chunked body (Transfer-Encoding:
+        chunked), with or without a Content-Length, gets 413 before it is parsed
+        and before the token check. The body is small, so the server can answer
+        without the upload being cut off: a connection error is a failure."""
+        body = b"a=" + b"x" * 2046
+        chunked = b"%x\r\n" % len(body) + body + b"\r\n0\r\n\r\n"
+        self.assertEqual(len(self.SALVOR_ROUTES), 12)
+        for ep in self.SALVOR_ROUTES:
             for token in (None, TOKEN):
-                headers = {"X-Salvor-Db": self.dbname, "Content-Type": "application/x-www-form-urlencoded"}
-                if token:
-                    headers["Authorization"] = "Bearer " + token
-                try:
-                    resp = self.opener.post(self.base_url() + "/salvor/v1/" + ep, data=chunks(size),
-                                            headers=headers, timeout=60)
-                except requests.exceptions.ConnectionError:
-                    continue  # the server answered 413 and closed before the upload finished
-                self.assertEqual(resp.status_code, 413, "%s chunked %s" % (ep, resp.text[:200]))
+                for with_length in (False, True):
+                    headers = {"X-Salvor-Db": self.dbname, "Transfer-Encoding": "chunked",
+                               "Content-Type": "application/x-www-form-urlencoded"}
+                    if with_length:
+                        headers["Content-Length"] = "10"
+                    if token:
+                        headers["Authorization"] = "Bearer " + token
+                    status = self._raw_post("/salvor/v1/" + ep, headers, chunked)
+                    self.assertEqual(status, 413, "%s token=%s content-length=%s" % (ep, bool(token), with_length))
         # normal requests are unaffected
         self.assertEqual(self._post("info").status_code, 200)
         self._assert_error(self._post("drill/start", json={}), 410, "drills_removed")
+
+    def test_routes_not_served_without_a_database(self):
+        """2.0.11: the routes are auth="public", which Odoo never puts on its
+        no-database routing map (a server-wide --load would otherwise expose them)."""
+        try:
+            from odoo.http import _generate_routing_rules
+        except ImportError:  # Odoo 20
+            from odoo.http.routing_map import _generate_routing_rules
+        nodb = [url for url, _endpoint in _generate_routing_rules(["salvor_connector"], nodb_only=True)]
+        self.assertEqual([u for u in nodb if u.startswith("/salvor/")], [])
+        routed = [url for url, _endpoint in _generate_routing_rules(["salvor_connector"], nodb_only=False)]
+        self.assertEqual(sorted(u for u in routed if u.startswith("/salvor/")),
+                         sorted("/salvor/v1/" + ep for ep in self.SALVOR_ROUTES))
+
+    def test_uninstall_hook_matches_the_loader(self):
+        """2.0.11: Odoo 16 calls uninstall_hook(cr, registry), 17+ uninstall_hook(env).
+        Check the hook against the call this Odoo's module loader really makes."""
+        import inspect
+        import re
+        from odoo.modules import loading
+        from .. import uninstall_hook
+        call = re.search(r"getattr\(py_module, uninstall_hook\)\(([^)]*)\)", inspect.getsource(loading))
+        self.assertTrue(call, "loader call not found")
+        nargs = len([a for a in call.group(1).split(",") if a.strip()])
+        self.assertEqual(len(inspect.signature(uninstall_hook).parameters), nargs, call.group(0))
 
     def test_no_merge_conflict_markers(self):
         """2.0.8: a store page shipped with conflict markers (2.0.6/2.0.7 on 17.0, 18.0, 20.0)."""
@@ -503,14 +557,14 @@ class TestSalvorConnector(HttpCase):
         self.assertEqual(rec.state, "dropped")
 
     def test_uninstall_hook_scope(self):
-        from .. import uninstall_hook
+        from .. import _uninstall_cleanup
         other = DbLock("some_other_db_ws3")
         self.assertTrue(other.acquire())
         other.release()
         name = drill_name("ut_unin")
         self.addCleanup(self._force_drop, name)
         self._owned_drill(name)
-        uninstall_hook(self.env)
+        _uninstall_cleanup(self.env)
         self.assertTrue(os.path.exists(other.path))  # other databases' locks untouched
         self.assertFalse(dbcompat.pg_db_exists(name))  # our drill dropped
 
