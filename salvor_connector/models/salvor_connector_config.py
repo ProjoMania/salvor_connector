@@ -1,9 +1,11 @@
 import logging
 import re
+import threading
 
 import requests
 
 from odoo import _, api, fields, models, release
+from odoo import modules as odoo_modules
 from odoo.exceptions import UserError
 
 from ..tools import JOB_TTL_HOURS_DEFAULT, PROTOCOL_VERSION, parse_ips, sha256_hex, sweep_drill_files, sweep_jobs
@@ -12,6 +14,26 @@ _logger = logging.getLogger(__name__)
 
 PAIRING_CODE_RE = re.compile(r"^SLV-[A-Z0-9]{4}-[A-Z0-9]{4}$")
 DEFAULT_SALVOR_URL = "https://app.salvorcloud.com"
+
+
+def _in_test():
+    # a test's cursor must not commit; there the test shares it with the server anyway
+    return bool(odoo_modules.module.current_test or getattr(threading.current_thread(), "testing", False))
+
+
+def _salvor_message(resp):
+    """Salvor's explanation from an error answer: FastAPI's {"detail": str | [{"msg"}]},
+    or the connector-style {"message"/"error"}. Plain text, at most 300 characters."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    detail = data.get("detail")
+    if isinstance(detail, list):
+        detail = "; ".join(str(d.get("msg") if isinstance(d, dict) else d) for d in detail[:3])
+    return str(detail or data.get("message") or data.get("error") or "")[:300]
 
 
 class SalvorConnectorConfig(models.Model):
@@ -39,6 +61,11 @@ class SalvorConnectorConfig(models.Model):
     enabled = fields.Boolean(default=True)
     last_call_at = fields.Datetime(readonly=True, copy=False)
     is_paired = fields.Boolean(compute="_compute_is_paired")
+    check_state = fields.Selection(
+        [("ok", "Reachable"), ("failed", "Not reachable"), ("unknown", "Not tested")],
+        string="Connection test", readonly=True, copy=False)
+    check_message = fields.Char(string="Connection test result", readonly=True, copy=False)
+    checked_at = fields.Datetime(string="Tested at", readonly=True, copy=False)
 
     @api.depends("token_hash")
     def _compute_is_paired(self):
@@ -102,13 +129,8 @@ class SalvorConnectorConfig(models.Model):
         except requests.RequestException as e:
             raise UserError(_("Could not reach Salvor: %s", e.__class__.__name__)) from None
         if resp.status_code != 200:
-            message = ""
-            try:
-                message = str(resp.json().get("message") or resp.json().get("error") or "")[:200]
-            except ValueError:
-                pass
             raise UserError(_("Salvor refused the pairing code (HTTP %(status)s). %(message)s",
-                              status=resp.status_code, message=message))
+                              status=resp.status_code, message=_salvor_message(resp)))
         try:
             data = resp.json()
             token = data["token"]
@@ -127,9 +149,47 @@ class SalvorConnectorConfig(models.Model):
             "pairing_code": False,
             "enabled": True,
         })
-        del token
         _logger.info("Salvor Connector paired (db=%s, instance=%s)", self.env.cr.dbname, self.instance_id)
+        # Salvor reaches this database from its own servers, in another transaction:
+        # the new token must be committed before Salvor can prove it gets through.
+        if not _in_test():
+            self.env.cr.commit()
+        ok, message = self._check_reachability(base, token)
+        del token
+        self.write({"check_state": "ok" if ok else ("failed" if ok is False else "unknown"),
+                    "check_message": message, "checked_at": fields.Datetime.now()})
+        if ok is False:
+            if not _in_test():
+                self.env.cr.commit()  # keep the pairing and the verdict; the notification shows why
+            return {"type": "ir.actions.client", "tag": "display_notification", "params": {
+                "type": "warning", "sticky": True,
+                "title": _("Paired, but Salvor cannot reach this database"),
+                "message": message,
+                "next": {"type": "ir.actions.client", "tag": "soft_reload"}}}
         return True
+
+    def _check_reachability(self, base, token):
+        """Ask Salvor to call /salvor/v1/info with the new token right now.
+        Returns (True|False|None, message); None = Salvor could not tell."""
+        try:
+            resp = requests.post(base + "/api/connector/pair/check",
+                                 json={"db": self.env.cr.dbname, "instance_id": self.instance_id},
+                                 headers={"Authorization": "Bearer " + token}, timeout=60, verify=True)
+        except requests.RequestException as e:
+            return None, _("Could not ask Salvor to test the connection (%s).", e.__class__.__name__)
+        if resp.status_code == 404:
+            return None, _("This Salvor does not test the connection at pairing; the first backup will.")
+        if resp.status_code != 200:
+            return None, _("Salvor could not test the connection (HTTP %(status)s). %(message)s",
+                           status=resp.status_code, message=_salvor_message(resp))
+        try:
+            data = resp.json()
+        except ValueError:
+            return None, _("Unexpected answer from Salvor.")
+        message = str(data.get("detail") or "")[:500]
+        if data.get("ok") is True:
+            return True, message or _("Salvor reached this database.")
+        return False, message or _("Salvor could not reach this database.")
 
     def action_rotate(self):
         """Rotate the token without a gap: Salvor (database menu → Rotate token)
@@ -185,7 +245,7 @@ class SalvorConnectorConfig(models.Model):
     def action_disconnect(self):
         self.ensure_one()
         self.write({"token_hash": False, "paired_at": False, "instance_id": False, "pairing_code": False,
-                    "allowed_ips": False})
+                    "allowed_ips": False, "check_state": False, "check_message": False, "checked_at": False})
         # revoking also stops running backup jobs and deletes their files now
         sweep_jobs(self.env.cr.dbname, 0)
         # ...drops the drill databases it created
