@@ -14,6 +14,7 @@ import psycopg2
 
 from odoo.exceptions import UserError
 from odoo.tests import HttpCase, tagged
+from odoo.tools import config
 from odoo.tools.misc import exec_pg_environ, find_pg_tool
 
 from .. import dbcompat
@@ -70,6 +71,113 @@ class TestSalvorConnector(HttpCase):
         self._assert_error(self._post("info"), 403, "ip_forbidden")
         self.cfg.allowed_ips = False
         self._assert_error(self._post("info"), 403, "ip_forbidden")
+
+    def test_wrong_ip_reports_the_address_seen(self):
+        self.cfg.allowed_ips = "10.9.9.9"
+        resp = self._post("info")
+        self._assert_error(resp, 403, "ip_forbidden")
+        body = resp.json()
+        self.assertIn(body["remote_addr"], ("127.0.0.1", "::1"))
+        self.assertFalse(body["cloudflare"])
+        self.assertNotIn("10.9.9.9", resp.text)  # the allowlist itself is never echoed
+
+    def test_cloudflare_client_address(self):
+        cf, salvor = "162.158.86.137", "203.0.113.7"
+        # CF edge as the resolved address (proxy_mode + XFF) or as the socket peer
+        self.assertEqual(tools.client_address("127.0.0.1", cf, salvor), (salvor, True))
+        self.assertEqual(tools.client_address(cf, cf, salvor), (salvor, True))
+        self.assertEqual(tools.client_address("2606:4700::1", "2606:4700::1", salvor), (salvor, True))
+        # a forged header from anywhere else is ignored
+        self.assertEqual(tools.client_address("198.51.100.9", "198.51.100.9", salvor), ("198.51.100.9", False))
+        self.assertEqual(tools.client_address("127.0.0.1", "198.51.100.9", salvor), ("198.51.100.9", False))
+        # no header / junk header: unchanged behaviour
+        self.assertEqual(tools.client_address("127.0.0.1", cf, None), (cf, False))
+        self.assertEqual(tools.client_address("127.0.0.1", cf, "not-an-ip"), (cf, False))
+        self.assertTrue(tools.is_cloudflare("::ffff:" + cf))
+
+    def test_cloudflare_header_through_http(self):
+        cf, salvor = "162.158.86.137", "203.0.113.7"
+        self.cfg.allowed_ips = salvor
+        with patch.dict(config.options, proxy_mode=True):
+            # Cloudflare -> nginx -> Odoo: XFF ends with the CF edge, CF-Connecting-IP is Salvor
+            ok = self._post("info", headers_extra={"X-Forwarded-For": cf, "CF-Connecting-IP": salvor})
+            self.assertEqual(ok.status_code, 200, ok.text[:300])
+            # straight to the origin with a forged header: refused, and the address seen is reported
+            forged = self._post("info", headers_extra={"X-Forwarded-For": "198.51.100.9",
+                                                       "CF-Connecting-IP": salvor})
+            self._assert_error(forged, 403, "ip_forbidden")
+            self.assertEqual(forged.json()["remote_addr"], "198.51.100.9")
+            # behind Cloudflare without the header: Odoo sees the edge and says so
+            edge = self._post("info", headers_extra={"X-Forwarded-For": cf})
+            self._assert_error(edge, 403, "ip_forbidden")
+            self.assertEqual(edge.json()["remote_addr"], cf)
+            self.assertTrue(edge.json()["cloudflare"])
+        # without proxy_mode the socket peer (127.0.0.1) is used and the header ignored
+        self._assert_error(self._post("info", headers_extra={"CF-Connecting-IP": salvor}), 403, "ip_forbidden")
+
+    # --- pairing ---------------------------------------------------------
+    def _fake_salvor(self, pair_status=200, pair_body=None, check_status=200, check_body=None):
+        calls = []
+
+        class Resp:
+            def __init__(self, status, body):
+                self.status_code, self._body = status, body
+
+            def json(self):
+                if self._body is None:
+                    raise ValueError("no json")
+                return self._body
+
+        def post(url, json=None, headers=None, **kw):
+            calls.append((url, json, headers))
+            if url.endswith("/api/connector/pair"):
+                return Resp(pair_status, pair_body if pair_body is not None else {
+                    "token": "n" * 43, "salvor_ips": ["203.0.113.7"], "instance_id": 42})
+            return Resp(check_status, check_body)
+        return calls, patch("odoo.addons.salvor_connector.models.salvor_connector_config.requests.post", post)
+
+    def test_pair_refusal_shows_salvor_detail(self):
+        self.cfg.pairing_code = "SLV-ABCD-EFGH"
+        detail = "odoo_url: Odoo must be reachable over https:// — set web.base.url to the https address"
+        calls, p = self._fake_salvor(pair_status=422, pair_body={"detail": detail})
+        with p, self.assertRaises(UserError) as cm:
+            self.cfg.action_connect()
+        self.assertIn("HTTP 422", str(cm.exception))
+        self.assertIn("reachable over https://", str(cm.exception))
+        calls, p = self._fake_salvor(pair_status=422, pair_body={"detail": [{"msg": "field required"}]})
+        with p, self.assertRaises(UserError) as cm:
+            self.cfg.action_connect()
+        self.assertIn("field required", str(cm.exception))
+
+    def test_pair_then_reachability_check(self):
+        self.cfg.pairing_code = "SLV-ABCD-EFGH"
+        calls, p = self._fake_salvor(check_body={"ok": True, "detail": "Salvor reached this database."})
+        with p:
+            self.assertIs(self.cfg.action_connect(), True)
+        self.assertEqual(self.cfg.check_state, "ok")
+        url, body, headers = calls[1]
+        self.assertTrue(url.endswith("/api/connector/pair/check"))
+        self.assertEqual(headers["Authorization"], "Bearer " + "n" * 43)
+        self.assertEqual(body, {"db": self.dbname, "instance_id": "42"})
+        self.assertEqual(self.cfg.token_hash, sha256_hex("n" * 43))
+
+        self.cfg.pairing_code = "SLV-ABCD-EFGH"
+        msg = "Odoo saw address 162.158.86.137 (a Cloudflare address) ..."
+        calls, p = self._fake_salvor(check_body={"ok": False, "detail": msg})
+        with p:
+            action = self.cfg.action_connect()
+        self.assertEqual(action["tag"], "display_notification")
+        self.assertEqual(action["params"]["message"], msg)
+        self.assertEqual(self.cfg.check_state, "failed")
+        self.assertTrue(self.cfg.token_hash)  # still paired: the token is valid, the path is not
+
+        self.cfg.pairing_code = "SLV-ABCD-EFGH"
+        calls, p = self._fake_salvor(check_status=404, check_body={"detail": "Not Found"})
+        with p:
+            self.assertIs(self.cfg.action_connect(), True)
+        self.assertEqual(self.cfg.check_state, "unknown")
+        self.cfg.action_disconnect()
+        self.assertFalse(self.cfg.check_state)
 
     def test_not_paired(self):
         self.cfg.action_disconnect()
