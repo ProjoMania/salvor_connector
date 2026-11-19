@@ -60,16 +60,22 @@ def _json(data, status=200):
                     headers=[("Cache-Control", "no-store")])
 
 
-def _remote_addr():
+def _client():
+    """(address, via_cloudflare) of the caller, as the allowlist sees it."""
     environ = request.httprequest.environ
     # ProxyFix (applied by Odoo only in proxy_mode) keeps the socket peer here.
-    addr = environ.get("werkzeug.proxy_fix.orig", {}).get("REMOTE_ADDR") or environ.get("REMOTE_ADDR")
+    peer = environ.get("werkzeug.proxy_fix.orig", {}).get("REMOTE_ADDR") or environ.get("REMOTE_ADDR") or ""
+    addr = peer
     if config.get("proxy_mode"):
         xff = environ.get("HTTP_X_FORWARDED_FOR")
         if xff:
             # Right-most entry = address seen by our own (trusted) proxy.
             addr = xff.split(",")[-1].strip()
-    return addr or ""
+    return tools.client_address(peer, addr, environ.get("HTTP_CF_CONNECTING_IP"))
+
+
+def _remote_addr():
+    return _client()[0]
 
 
 def _module_installed_raw(dbname):
@@ -124,8 +130,13 @@ class SalvorConnectorController(http.Controller):
                 and settings["token_hash"] and presented):
             raise SalvorError(401, "unauthorized",
                               "Unauthorized: unknown database, connector not paired, or invalid token")
-        if not ip_allowed(_remote_addr(), settings["allowed_ips"]):
-            raise SalvorError(403, "ip_forbidden", "Source address not allowed")
+        addr, via_cf = _client()
+        if not ip_allowed(addr, settings["allowed_ips"]):
+            # only a caller holding this database's token gets here: telling it
+            # which address Odoo saw is what makes a proxy misconfiguration fixable
+            raise SalvorError(403, "ip_forbidden", "Source address not allowed",
+                              remote_addr=addr[:64], cloudflare=tools.is_cloudflare(addr),
+                              via_cloudflare=via_cf)
         if not settings["enabled"]:
             raise SalvorError(403, "disabled", "Connector is disabled")
         return dbname, registry, settings

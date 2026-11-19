@@ -49,13 +49,58 @@ def parse_ips(text):
 
 
 def ip_allowed(addr, allowed_text):
+    ip = _ip(addr)
+    if ip is None:
+        return False
+    return any(ip in net for net in parse_ips(allowed_text))
+
+
+# Cloudflare's published edge ranges, from https://www.cloudflare.com/ips-v4 and
+# /ips-v6 as fetched on 2026-11-19. Behind Cloudflare, Odoo sees one of these as
+# the client; the real client is then in CF-Connecting-IP, which Cloudflare
+# always overwrites. The header is trusted only when the address Odoo got the
+# request from is one of these, so a caller reaching the origin directly cannot
+# forge it. Update this list when Cloudflare changes its ranges.
+CLOUDFLARE_RANGES = (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
+_CLOUDFLARE_NETS = tuple(ipaddress.ip_network(n) for n in CLOUDFLARE_RANGES)
+
+
+def _ip(addr):
     try:
         ip = ipaddress.ip_address((addr or "").strip())
     except ValueError:
-        return False
+        return None
     if ip.version == 6 and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
-    return any(ip in net for net in parse_ips(allowed_text))
+    return ip
+
+
+def is_cloudflare(addr):
+    ip = _ip(addr)
+    return bool(ip) and any(ip in net for net in _CLOUDFLARE_NETS)
+
+
+def client_address(peer, resolved, cf_connecting_ip):
+    """The caller's address for the allowlist.
+
+    `peer` is the socket peer, `resolved` the address Odoo settled on (the
+    right-most X-Forwarded-For entry in proxy_mode, else the peer). When either
+    is a Cloudflare edge, Cloudflare's CF-Connecting-IP is the caller; from any
+    other peer that header is ignored (it could be forged).
+    Returns (address, via_cloudflare).
+    """
+    if cf_connecting_ip and (is_cloudflare(resolved) or is_cloudflare(peer)):
+        real = _ip(cf_connecting_ip)
+        if real is not None:
+            return str(real), True
+    return resolved or peer or "", False
 
 
 def lock_dir():
