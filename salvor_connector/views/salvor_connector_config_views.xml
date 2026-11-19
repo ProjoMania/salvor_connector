@@ -29,6 +29,10 @@
                                 class="btn-link" groups="base.group_system"
                                 confirm="Drop every drill database this connector created? Their data is deleted."/>
                     </div>
+                    <div class="alert alert-danger" role="alert" invisible="not is_paired or check_state != 'failed'">
+                        Paired, but Salvor could not reach this database when it tested the connection:
+                        <field name="check_message" readonly="1" class="oe_inline"/>
+                    </div>
                     <div class="alert alert-warning" role="status" invisible="is_paired">
                         Not connected. In Salvor choose "Add database" then "Connector", paste the pairing code here and click Connect.
                     </div>
@@ -40,6 +44,8 @@
                             <field name="paired_at"/>
                             <field name="instance_id"/>
                             <field name="last_call_at"/>
+                            <field name="check_state" invisible="not check_state"/>
+                            <field name="checked_at" invisible="not checked_at"/>
                         </group>
                         <group string="Access">
                             <field name="enabled"/>
