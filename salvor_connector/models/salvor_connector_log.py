@@ -38,7 +38,11 @@ class SalvorConnectorLog(models.Model):
     @api.model
     def _gc_old_rows(self):
         now = fields.Datetime.now()
-        self.sudo().search([("date", "<", now - timedelta(days=self._retention_days()))]).unlink()
+        # The newest successful call stays whatever its age: "Last call" and the connection
+        # state on the settings form are read from it (calls do not write the settings row).
+        last_ok = self.sudo().search([("http_status", "<", 400)], order="id desc", limit=1)
+        self.sudo().search([("date", "<", now - timedelta(days=self._retention_days())),
+                            ("id", "not in", last_ok.ids)]).unlink()
         # refusals (anyone can cause them) are kept for a shorter time
         days = min(REFUSED_RETENTION_DAYS, self._retention_days())
         self.sudo().search([("http_status", ">=", 400), ("date", "<", now - timedelta(days=days))]).unlink()

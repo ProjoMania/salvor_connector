@@ -36,7 +36,7 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to the latest version (2.0.11; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to the latest version (2.0.13; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`16.0`, `17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
@@ -63,6 +63,25 @@ GitHub advisory: [GHSA-28rv-398c-r5xx](https://github.com/ProjoMania/salvor_conn
 | Impact | Memory and CPU use on the Odoo server from large request bodies (denial of service). No data access. |
 
 ### What to do
-Upgrade to 2.0.11 (pull your branch, restart Odoo, `-u salvor_connector`). Independently of the module,
-a reverse proxy that limits request bodies (nginx `client_max_body_size`) and restricts `/salvor/` to
-Salvor's IP addresses also contains it.
+Upgrade to the latest version (2.0.13; 2.0.11 or later has the complete fix): pull your branch, restart
+Odoo, `-u salvor_connector`. Independently of the module, a reverse proxy that limits request bodies
+(nginx `client_max_body_size`) and restricts `/salvor/` to Salvor's IP addresses also contains it.
+
+## 2.0.12: the IP allowlist trusted `CF-Connecting-IP` by default (changed in 2.0.13)
+
+No advisory number is assigned to this. **Do not use 2.0.12; use 2.0.13.**
+
+| | |
+|---|---|
+| Component | `salvor_connector`, source-IP allowlist |
+| Affected | **2.0.12 only** (tags `16.0-2.0.12` to `20.0-2.0.12`). On every install, behind Cloudflare or not, a request that reached Odoo from an address in Cloudflare's published ranges had its `CF-Connecting-IP` header checked against Allowed IPs in place of the address Odoo saw. 2.0.11 and earlier never read that header. |
+| Why that is weak | Cloudflare's ranges carry the traffic of every Cloudflare customer. A request from those ranges is not known to have come through the site's own zone, so its `CF-Connecting-IP` header is not known to be the caller's address. Cloudflare's [HTTP headers reference](https://developers.cloudflare.com/fundamentals/reference/http-headers/) says of one such case: "For Worker subrequests destined for a non-Cloudflare customer zone, the Worker script controls the client IP headers: both CF-Connecting-IP and x-real-ip can be altered by the Worker." |
+| Preconditions | A valid access token for the database (it is checked first, on every route), and an Odoo server that accepts connections from Cloudflare's ranges. |
+| Impact | The IP allowlist, a second check behind the token, could be passed from an address that is not on it. Nothing is reachable without the token. |
+| Changed in | **2.0.13**: the header is read only when an administrator switches on **Odoo is behind Cloudflare** (Settings → Salvor Connector → Settings), which is off by default, and never on a request that carries a `CF-Worker` header. An upgrade from 2.0.12 leaves the switch off. |
+
+With the switch on, the allowlist does not protect against someone who already holds the access token:
+the header it relies on arrives from Cloudflare's network, which is not known to be your own zone. The
+README says what stops that (Security: zone-level or per-hostname Authenticated Origin Pulls with your
+own certificate). 2.0.12 also showed a false error after a successful pairing
+(`docs/release/2.0.13.md`).
