@@ -47,8 +47,9 @@
                     (<code>SLV-XXXX-XXXX</code>), valid for 10 minutes, usable once.</li>
                 <li>In Odoo an administrator opens <i>Settings &rarr; Salvor Connector &rarr; Settings</i>, pastes the
                     code and clicks <b>Connect</b>. Developer mode is not needed.</li>
-                <li>The module makes one HTTPS request to Salvor. Salvor answers with an access token and the IP
-                    address its backups come from. Only the SHA-256 hash of the token is stored.</li>
+                <li>The module sends the code to Salvor over HTTPS. Salvor answers with an access token and the IP
+                    address its backups come from. Only the SHA-256 hash of the token is stored. The module then asks
+                    Salvor to test the connection and shows the result on this form.</li>
                 <li>When a backup is due, Salvor calls the module and presents the token. The module checks the token
                     and the caller's address, then runs <code>pg_dump</code> (and packs the filestore for the zip
                     format) in a background process on your server, into a temporary file.</li>
@@ -91,8 +92,9 @@
                 <li>Log in to the live database. It is not a user, a session or an API key.</li>
                 <li>Create, duplicate, restore or drop databases through Odoo's database manager, or read or change
                     the master password.</li>
-                <li>Back up a database it was not paired with, call from an address not on the allow list (an empty
-                    list refuses everyone), or work while the Connector is disabled or disconnected.</li>
+                <li>Back up a database it was not paired with, call from an address that Odoo does not see as being
+                    on the allow list (an empty list refuses everyone; behind a proxy or Cloudflare, read the next
+                    section), or work while the Connector is disabled or disconnected.</li>
                 <li>Change the module's settings, write to your data or run code on the server.</li>
                 <li>Start a restore drill: the restore code was removed in 2.0.4. Drill calls are checked like every other
                     call (token, address, enabled, logged in the Pull Log) and then get <code>410</code>; a body over
@@ -103,9 +105,16 @@
             <ul>
                 <li><code>list_db = False</code>: works; the module does not use <code>/web/database/*</code>.</li>
                 <li>No master password: never asked for, stored or sent.</li>
-                <li><code>dbfilter</code> and reverse proxies: work. Behind a proxy set <code>proxy_mode = True</code>
-                    and keep Odoo's own port closed to the internet: the module trusts the last
-                    <code>X-Forwarded-For</code> entry (the token is still required).</li>
+                <li><code>dbfilter</code> and reverse proxies: work. Behind a proxy set <code>proxy_mode = True</code>,
+                    have the proxy set <code>X-Forwarded-For</code> itself, and keep Odoo's own port closed to the
+                    internet: the address check uses the last <code>X-Forwarded-For</code> entry (the token is still
+                    required).</li>
+                <li>Cloudflare: works once you switch on <b>Odoo is behind Cloudflare</b> in the module's settings.
+                    It is off by default. With it on, a request that reaches Odoo from a Cloudflare address is
+                    checked by the <code>CF-Connecting-IP</code> header that Cloudflare adds. That header does not
+                    show that a request came through your own Cloudflare zone, so the address check is not a
+                    protection on its own there: the access token is, and it is checked first. Through a Cloudflare
+                    Tunnel the switch has no effect.</li>
                 <li>Without a valid token the module gives one <code>401</code> answer for an unknown database, a
                     database without the module, an unpaired one and a wrong token. Odoo itself can still reveal
                     whether a database exists; allow <code>/salvor/</code> only from Salvor's address at nginx or the
@@ -115,8 +124,10 @@
             <h4 style="color:#0d9488;">What leaves your server, and what stays</h4>
             <ul>
                 <li>On <b>Connect</b> or <b>Rotate token</b>: the pairing code, <code>web.base.url</code>, the database
-                    name, Odoo and module versions and the protocol number, over HTTPS to Salvor. This is the only
-                    connection the module opens. No telemetry.</li>
+                    name, Odoo and module versions and the protocol number, over HTTPS to Salvor. Right after that, one
+                    more HTTPS request asks Salvor to test that it can reach this database; it carries the database name,
+                    the Salvor instance number and the new access token. These are the only connections the module opens. No
+                    telemetry.</li>
                 <li>On Salvor's calls: the facts above, and the backup itself.</li>
                 <li><b>The temporary backup file is not encrypted.</b> It is readable only by the Odoo system account
                     and exists until Salvor has downloaded it (normally minutes); if never collected, the hourly
@@ -124,7 +135,8 @@
                 <li>The <b>Pull Log</b> (<i>Settings &rarr; Salvor Connector &rarr; Pull Log</i>, administrators only)
                     records Salvor's calls and most refusals: successful status polls are not logged one by one, and
                     a refusal for a database the worker has not loaded, or one over the per-minute limit, goes to the
-                    Odoo server log only. Kept 90 days;
+                    Odoo server log only. Kept 90 days (the latest successful call stays until a newer one
+                    exists);
                     refusals 14 days, at most 30 rows a minute, and evicted first at the 200,000-row cap.</li>
             </ul>
 
@@ -159,6 +171,13 @@
                 <li><code>pg_dump</code> on the Odoo server, same or newer major version than PostgreSQL.</li>
                 <li>Odoo reachable over HTTPS from Salvor, with <code>web.base.url</code> set to its public
                     <code>https://</code> address. On Odoo 16, 17 and 18 the URL must lead to exactly one database.</li>
+                <li>Behind Cloudflare: switch on <b>Odoo is behind Cloudflare</b> in the module's settings (off by
+                    default), or restore visitor addresses at your own proxy. With the switch on, the address check
+                    trusts Cloudflare's <code>CF-Connecting-IP</code> header; the access token is required either way.
+                    Not for Cloudflare Tunnel.</li>
+                <li>Behind your own reverse proxy (nginx or another): <code>proxy_mode = True</code> in
+                    <code>odoo.conf</code>, and the proxy sets <code>X-Forwarded-For</code>,
+                    <code>X-Forwarded-Proto</code> and <code>X-Forwarded-Host</code>. Behind both, both apply.</li>
                 <li>The database owned by the PostgreSQL role Odoo uses (or named in <code>db_name</code>).</li>
                 <li>Free disk in the Odoo data directory: database size (+ filestore for the zip format) + 256 MiB.</li>
                 <li>Each download piece is a normal Odoo request bound by <code>limit_time_real</code>; on a link slower

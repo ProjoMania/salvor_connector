@@ -1,5 +1,6 @@
 """Helpers shared by the model and the controller (no ORM state here)."""
 import fcntl
+import functools
 import hashlib
 import ipaddress
 import json
@@ -48,6 +49,16 @@ def parse_ips(text):
     return nets
 
 
+def is_ip_or_cidr(text):
+    """True when the whole text is one IP address or one CIDR range (what one line of
+    Allowed IPs may hold)."""
+    try:
+        ipaddress.ip_network((text or "").strip(), strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def ip_allowed(addr, allowed_text):
     ip = _ip(addr)
     if ip is None:
@@ -55,12 +66,17 @@ def ip_allowed(addr, allowed_text):
     return any(ip in net for net in parse_ips(allowed_text))
 
 
-# Cloudflare's published edge ranges, from https://www.cloudflare.com/ips-v4 and
-# /ips-v6 as fetched on 2026-11-19. Behind Cloudflare, Odoo sees one of these as
-# the client; the real client is then in CF-Connecting-IP, which Cloudflare
-# always overwrites. The header is trusted only when the address Odoo got the
-# request from is one of these, so a caller reaching the origin directly cannot
-# forge it. Update this list when Cloudflare changes its ranges.
+# Cloudflare's published address ranges: the list https://api.cloudflare.com/client/v4/ips
+# returned on 2026-11-20 (15 IPv4 + 7 IPv6). Nothing here is fetched at run time. The
+# system parameter salvor_connector.cloudflare_ranges replaces the list when Cloudflare
+# changes its ranges before a module release does.
+#
+# These ranges carry the traffic of EVERY Cloudflare customer, Workers included, and a
+# Worker can set CF-Connecting-IP on a request it sends to someone else's origin. A
+# request from one of these addresses is therefore not known to have come through this
+# site's own Cloudflare zone. That is why the header is read only when the administrator
+# switched on "Odoo is behind Cloudflare" (off by default), and why the token, checked
+# first, is the protection either way.
 CLOUDFLARE_RANGES = (
     "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
     "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
@@ -70,6 +86,78 @@ CLOUDFLARE_RANGES = (
     "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
 )
 _CLOUDFLARE_NETS = tuple(ipaddress.ip_network(n) for n in CLOUDFLARE_RANGES)
+CLOUDFLARE_RANGES_PARAM = "salvor_connector.cloudflare_ranges"
+CLOUDFLARE_RANGES_MAX = 256  # entries in the override; Cloudflare publishes 22
+# an override entry broader than this is a mistake, not a Cloudflare range
+# (Cloudflare's widest are a /13 and a /29)
+_OVERRIDE_MIN_PREFIX = {4: 8, 6: 16}
+# ... and so is anything local: behind a proxy of your own every request arrives from such
+# an address, and the header would then be trusted from everybody
+_OVERRIDE_NEVER = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.168.0.0/16", "::/127", "fc00::/7", "fe80::/10"))
+
+
+def parse_cloudflare_ranges(text):
+    """Networks from the override parameter (comma or whitespace separated CIDRs).
+
+    Strict: at most CLOUDFLARE_RANGES_MAX entries; every entry must be a network
+    address with its prefix length (or one address), no broader than /8 (IPv4) or
+    /16 (IPv6), not a loopback, private or link-local range, and not an
+    IPv4-mapped IPv6 range (addresses are compared unwrapped, so it would never
+    match). Raises ValueError naming the first entry that is not. An empty text
+    gives an empty tuple.
+    """
+    nets = []
+    items = [item for item in re.split(r"[\s,;]+", (text or "").strip()) if item]
+    if len(items) > CLOUDFLARE_RANGES_MAX:
+        raise ValueError("more than %d entries" % CLOUDFLARE_RANGES_MAX)
+    for item in items:
+        try:
+            net = ipaddress.ip_network(item, strict=True)
+        except ValueError:
+            raise ValueError("not a network in CIDR form: %r" % item[:60]) from None
+        if net.version == 6 and net.network_address.ipv4_mapped is not None:
+            raise ValueError("IPv4-mapped range (write it as IPv4): %r" % item[:60])
+        if net.prefixlen < _OVERRIDE_MIN_PREFIX[net.version]:
+            raise ValueError("range too broad: %r" % item[:60])
+        if any(net.version == local.version and net.overlaps(local) for local in _OVERRIDE_NEVER):
+            raise ValueError("loopback, private or link-local range: %r" % item[:60])
+        nets.append(net)
+    return tuple(nets)
+
+
+def cloudflare_nets(override_text=None):
+    """(networks, error): the override when it is set and valid, else the built-in
+    list. A bad override is never used in part: error then says why, and the
+    built-in list applies. Each text is parsed once per process."""
+    return _cloudflare_nets(override_text or "")
+
+
+@functools.lru_cache(maxsize=8)
+def _cloudflare_nets(text):
+    try:
+        nets = parse_cloudflare_ranges(text)
+    except ValueError as e:
+        return _CLOUDFLARE_NETS, str(e)
+    return (nets or _CLOUDFLARE_NETS), None
+
+
+def ip_text(addr):
+    """The address in its plain form ("::ffff:1.2.3.4" -> "1.2.3.4"), or "" when the text is
+    not one IP address: what may be repeated to a person."""
+    ip = _ip(addr)
+    return str(ip) if ip is not None else ""
+
+
+def cloudflare_header_problem(cf_connecting_ip, cf_worker):
+    """Why CF-Connecting-IP was not used for a request from a Cloudflare address while
+    "Odoo is behind Cloudflare" is on (for the pull log)."""
+    if cf_worker is not None:
+        return "CF-Worker header present"
+    if not cf_connecting_ip:
+        return "no CF-Connecting-IP header"
+    return "CF-Connecting-IP is not one IP address"
 
 
 def _ip(addr):
@@ -82,25 +170,39 @@ def _ip(addr):
     return ip
 
 
-def is_cloudflare(addr):
+def is_cloudflare(addr, nets=None):
     ip = _ip(addr)
-    return bool(ip) and any(ip in net for net in _CLOUDFLARE_NETS)
+    return bool(ip) and any(ip in net for net in (_CLOUDFLARE_NETS if nets is None else nets))
 
 
-def client_address(peer, resolved, cf_connecting_ip):
-    """The caller's address for the allowlist.
+def client_address(peer, resolved, cf_connecting_ip, trust_cloudflare=False, cf_worker=None, nets=None):
+    """The caller's address for the allowlist. Returns (address, via_cloudflare).
 
     `peer` is the socket peer, `resolved` the address Odoo settled on (the
-    right-most X-Forwarded-For entry in proxy_mode, else the peer). When either
-    is a Cloudflare edge, Cloudflare's CF-Connecting-IP is the caller; from any
-    other peer that header is ignored (it could be forged).
-    Returns (address, via_cloudflare).
+    right-most X-Forwarded-For entry in proxy_mode, else the peer). `resolved` is
+    the caller, unless ALL of the following hold; then CF-Connecting-IP is:
+
+    - `trust_cloudflare`: "Odoo is behind Cloudflare" is switched on in the
+      settings (off by default);
+    - `resolved` or `peer` is inside Cloudflare's ranges (`nets`, default the
+      built-in list): from any other address the header is ignored;
+    - the request has no CF-Worker header (`cf_worker` is None). Cloudflare adds
+      that header to the requests a Worker makes, and a Worker chooses the
+      CF-Connecting-IP it sends to another customer's origin;
+    - the header holds exactly one valid IP address (IPv4-mapped IPv6 unwrapped).
+
+    Even then the header says what arrived from Cloudflare's network, not that
+    the request passed through this site's own zone.
     """
-    if cf_connecting_ip and (is_cloudflare(resolved) or is_cloudflare(peer)):
-        real = _ip(cf_connecting_ip)
-        if real is not None:
-            return str(real), True
-    return resolved or peer or "", False
+    seen = resolved or peer or ""
+    if not trust_cloudflare or not cf_connecting_ip or cf_worker is not None:
+        return seen, False
+    if not (is_cloudflare(resolved, nets) or is_cloudflare(peer, nets)):
+        return seen, False
+    real = _ip(cf_connecting_ip)
+    if real is None:
+        return seen, False
+    return str(real), True
 
 
 def lock_dir():
