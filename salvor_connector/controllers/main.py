@@ -6,6 +6,11 @@ module is loaded server-wide), csrf=False, bearer token compared in
 constant time against sha256(token) stored in the database named by
 X-Salvor-Db, source-IP allowlist, one backup at a time per database.
 
+A call never writes the settings row (salvor.connector.config): it only reads it
+and adds a row to the pull log, so it cannot conflict with the transaction that
+pairs or rotates. "Last call" and the connection state on the settings form are
+derived from the pull log.
+
 v2 moves the work out of the HTTP request: backup/start launches a detached
 runner (tools.spawn_runner / jobrunner.py) that writes the archive to a 0600
 file under data_dir; Salvor polls backup/status and fetches the file with
@@ -26,9 +31,11 @@ from odoo import SUPERUSER_ID, api, fields, http, release
 from odoo.http import request, Response
 from odoo.modules.registry import Registry
 from odoo.tools import config
+from odoo.tools.sql import column_exists
 
 from .. import dbcompat
 from .. import tools
+from ..models.salvor_connector_config import cloudflare_nets_from
 from ..tools import (BACKUP_DISK_MARGIN, CAPABILITIES, DBNAME_RE, DRILL_RE,
                      PROTOCOL_VERSION, PROTOCOLS_SUPPORTED, DbLock, ip_allowed, sha256_hex,
                      stream_odoo_zip, stream_pg_dump)
@@ -50,6 +57,8 @@ STUB_OPTS = dict(ROUTE_OPTS, max_content_length=1024)
 
 
 class SalvorError(Exception):
+    log_detail = None  # pull-log text when it should say more than the message sent to the caller
+
     def __init__(self, status, code, message, **extra):
         super().__init__(message)
         self.status, self.code, self.message, self.extra = status, code, message, extra
@@ -60,8 +69,16 @@ def _json(data, status=200):
                     headers=[("Cache-Control", "no-store")])
 
 
-def _client():
-    """(address, via_cloudflare) of the caller, as the allowlist sees it."""
+CLIENT_KEY = "salvor_connector.client"  # WSGI environ: (address, via_cloudflare) once decided
+
+
+def _client(settings=None):
+    """(address, via_cloudflare) of the caller, as the allowlist sees it.
+
+    CF-Connecting-IP is looked at only with this database's settings in hand and
+    "Odoo is behind Cloudflare" switched on there (tools.client_address has the
+    rules); without settings the address is the one Odoo itself resolved.
+    """
     environ = request.httprequest.environ
     # ProxyFix (applied by Odoo only in proxy_mode) keeps the socket peer here.
     peer = environ.get("werkzeug.proxy_fix.orig", {}).get("REMOTE_ADDR") or environ.get("REMOTE_ADDR") or ""
@@ -71,11 +88,20 @@ def _client():
         if xff:
             # Right-most entry = address seen by our own (trusted) proxy.
             addr = xff.split(",")[-1].strip()
-    return tools.client_address(peer, addr, environ.get("HTTP_CF_CONNECTING_IP"))
+    settings = settings or {}
+    client = tools.client_address(
+        peer, addr, environ.get("HTTP_CF_CONNECTING_IP"),
+        trust_cloudflare=bool(settings.get("trust_cloudflare")),
+        cf_worker=environ.get("HTTP_CF_WORKER"),
+        nets=settings.get("cloudflare_nets"))
+    environ[CLIENT_KEY] = client
+    return client
 
 
 def _remote_addr():
-    return _client()[0]
+    """The caller's address for the pull log: the one the allowlist used when the
+    call got that far, else the address Odoo resolved."""
+    return (request.httprequest.environ.get(CLIENT_KEY) or _client())[0]
 
 
 def _module_installed_raw(dbname):
@@ -92,6 +118,20 @@ def _module_installed_raw(dbname):
 
 
 REFUSALS_PER_MINUTE = 30
+_ready_registries = {}  # db name -> id() of the registry whose settings table was seen up to date
+_not_upgraded_logged = set()
+
+
+def _settings_ready(cr, registry, dbname):
+    """False between an Odoo restart on new module code and ``-u salvor_connector``: the
+    settings table then lacks this version's columns and cannot be read. Such a database
+    answers like one that is not paired (the same 401 as an unknown database), not 500."""
+    if _ready_registries.get(dbname) == id(registry):
+        return True
+    if column_exists(cr, "salvor_connector_config", "trust_cloudflare"):
+        _ready_registries[dbname] = id(registry)
+        return True
+    return False
 
 
 class SalvorConnectorController(http.Controller):
@@ -117,33 +157,56 @@ class SalvorConnectorController(http.Controller):
             registry = Registry(dbname)
             if CONFIG_MODEL in registry:
                 with registry.cursor() as cr:
-                    env = api.Environment(cr, SUPERUSER_ID, {})
-                    rec = env[CONFIG_MODEL]._get_singleton()
-                    settings = {
-                        "token_hash": rec.token_hash or "",
-                        "allowed_ips": rec.allowed_ips or "",
-                        "enabled": rec.enabled,
-                        "module_version": rec._module_version(),
-                    }
+                    if _settings_ready(cr, registry, dbname):
+                        env = api.Environment(cr, SUPERUSER_ID, {})
+                        rec = env[CONFIG_MODEL]._get_singleton()
+                        settings = {
+                            "token_hash": rec.token_hash or "",
+                            "allowed_ips": rec.allowed_ips or "",
+                            "enabled": rec.enabled,
+                            "module_version": rec._module_version(),
+                            "trust_cloudflare": bool(rec.trust_cloudflare),
+                            # the text only: it is parsed after the token check, never for a stranger
+                            "cloudflare_ranges": rec._cloudflare_ranges_text(),
+                        }
+                    elif dbname not in _not_upgraded_logged:
+                        _not_upgraded_logged.add(dbname)
+                        _logger.error("salvor_connector: database %s still has an older version of the module; "
+                                      "every call is refused until you run -u salvor_connector on it", dbname)
         stored = (settings or {}).get("token_hash") or "0" * 64  # same compare cost on a miss
         if not (hmac.compare_digest(presented.encode(), stored.encode()) and settings
                 and settings["token_hash"] and presented):
             raise SalvorError(401, "unauthorized",
                               "Unauthorized: unknown database, connector not paired, or invalid token")
-        addr, via_cf = _client()
+        settings["cloudflare_nets"] = cloudflare_nets_from(settings["cloudflare_ranges"])
+        addr, via_cf = _client(settings)
         if not ip_allowed(addr, settings["allowed_ips"]):
-            # only a caller holding this database's token gets here: telling it
-            # which address Odoo saw is what makes a proxy misconfiguration fixable
-            raise SalvorError(403, "ip_forbidden", "Source address not allowed",
-                              remote_addr=addr[:64], cloudflare=tools.is_cloudflare(addr),
-                              via_cloudflare=via_cf)
+            # Only a caller holding this database's token gets here. The body tells it
+            # what makes a proxy or Cloudflare setup fixable, and nothing else:
+            #   remote_addr      the address that was checked against Allowed IPs
+            #   cloudflare       that address is inside Cloudflare's ranges
+            #   via_cloudflare   it was read from CF-Connecting-IP
+            #   cloudflare_mode  "Odoo is behind Cloudflare" is switched on here
+            # The allowlist itself is never returned.
+            seen_cf = tools.is_cloudflare(addr, settings["cloudflare_nets"])
+            err = SalvorError(403, "ip_forbidden", "Source address not allowed",
+                              remote_addr=addr[:64], cloudflare=seen_cf, via_cloudflare=via_cf,
+                              cloudflare_mode=settings["trust_cloudflare"])
+            if seen_cf and not via_cf:
+                # the pull log says why the address Odoo saw was Cloudflare's own (the caller is not told)
+                environ = request.httprequest.environ
+                why = '"Odoo is behind Cloudflare" is off' if not settings["trust_cloudflare"] else \
+                    tools.cloudflare_header_problem(environ.get("HTTP_CF_CONNECTING_IP"), environ.get("HTTP_CF_WORKER"))
+                err.log_detail = "Source address not allowed (a Cloudflare address; %s)" % why
+            raise err
         if not settings["enabled"]:
             raise SalvorError(403, "disabled", "Connector is disabled")
         return dbname, registry, settings
 
     def _audit(self, dbname, endpoint, status, result="ok", detail="", job_id=None, nbytes=None):
         """One salvor.connector.log row (never the token), visible in
-        Settings → Salvor Connector → Pull Log; touch last_call_at."""
+        Settings → Salvor Connector → Pull Log. Insert only: the settings row is
+        not written (its "Last call" is read from these rows)."""
         addr = _remote_addr()
         _logger.info("salvor_connector %s -> %s %s from %s %s", endpoint, status, result, addr, detail or "")
         if not dbname:
@@ -170,8 +233,6 @@ class SalvorConnectorController(http.Controller):
                     "bytes": nbytes or 0,
                     "detail": (detail or "")[:500],
                 })
-                if status < 400:
-                    env[CONFIG_MODEL]._get_singleton().write({"last_call_at": fields.Datetime.now()})
         except Exception:  # noqa: BLE001 - auditing must never break the call
             _logger.exception("salvor_connector: audit failed")
 
@@ -197,7 +258,7 @@ class SalvorConnectorController(http.Controller):
             return func(dbname, registry, settings)
         except SalvorError as e:
             # only audit into the db once we know it really hosts the connector
-            self._audit(dbname or self._known_db(), endpoint, e.status, e.code, e.message[:200])
+            self._audit(dbname or self._known_db(), endpoint, e.status, e.code, (e.log_detail or e.message)[:200])
             return _json(dict(e.extra, error=e.code, message=e.message), e.status)
 
     @staticmethod
