@@ -17,7 +17,8 @@
                     <div class="oe_title">
                         <h1>Salvor Connector</h1>
                     </div>
-                    <div class="alert alert-success" role="status" invisible="not is_paired">
+                    <div class="alert alert-success" role="status"
+                         invisible="not is_paired or not enabled or connection_state in ('failed', 'refused', 'timeout', 'unknown')">
                         Connected to Salvor. Backups of this database can be taken by Salvor from the allowed IPs below.
                     </div>
                     <div class="alert alert-danger" role="alert" invisible="not leftover_drill_count">
@@ -29,9 +30,37 @@
                                 class="btn-link" groups="base.group_system"
                                 confirm="Drop every drill database this connector created? Their data is deleted."/>
                     </div>
-                    <div class="alert alert-danger" role="alert" invisible="not is_paired or check_state != 'failed'">
-                        Paired, but Salvor could not reach this database when it tested the connection:
-                        <field name="check_message" readonly="1" class="oe_inline"/>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not is_paired or not enabled or connection_state != 'failed' or offer_cloudflare">
+                        Paired, but Salvor could not reach this database when it tested the connection at pairing:
+                        <field name="connection_message" readonly="1" class="oe_inline"/>
+                        After you fix the cause, choose Test connection in Salvor, or run a backup from Salvor.
+                        This notice clears when Salvor reaches this database.
+                    </div>
+                    <div class="alert alert-danger" role="alert" invisible="not offer_cloudflare or not enabled">
+                        Paired, but Odoo refused Salvor's connection test: the request reached Odoo from a
+                        Cloudflare address, and "Odoo is behind Cloudflare" is switched off.
+                        <button name="action_trust_cloudflare" type="object"
+                                string="My Odoo is behind Cloudflare: switch it on"
+                                class="btn btn-secondary d-block my-2" groups="base.group_system"/>
+                        With it on, the address check relies on the CF-Connecting-IP header that Cloudflare adds,
+                        which does not show that a request came through your own zone: the access token remains
+                        the protection. To let only your own zone reach Odoo, set up zone-level or per-hostname
+                        Authenticated Origin Pulls. After you switch it on, choose Test connection in Salvor, or
+                        run a backup from Salvor.
+                    </div>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not is_paired or not enabled or connection_state != 'refused'">
+                        <field name="connection_message" readonly="1" class="oe_inline"/>
+                        This notice clears when Salvor reaches this database.
+                    </div>
+                    <div class="alert alert-info" role="status"
+                         invisible="not is_paired or not enabled or connection_state not in ('timeout', 'unknown')">
+                        Paired with Salvor, but the connection is not tested:
+                        <field name="connection_message" readonly="1" class="oe_inline"/>
+                    </div>
+                    <div class="alert alert-warning" role="status" invisible="not is_paired or enabled">
+                        Paired, but the Connector is disabled: Odoo refuses every call from Salvor until Enabled is ticked again.
                     </div>
                     <div class="alert alert-warning" role="status" invisible="is_paired">
                         Not connected. In Salvor choose "Add database" then "Connector", paste the pairing code here and click Connect.
@@ -39,17 +68,19 @@
                     <group>
                         <group string="Pairing">
                             <field name="is_paired" invisible="1"/>
+                            <field name="offer_cloudflare" invisible="1"/>
                             <field name="salvor_url"/>
                             <field name="pairing_code" placeholder="SLV-XXXX-XXXX"/>
                             <field name="paired_at"/>
                             <field name="instance_id"/>
                             <field name="last_call_at"/>
-                            <field name="check_state" invisible="not check_state"/>
+                            <field name="connection_state" invisible="not connection_state"/>
                             <field name="checked_at" invisible="not checked_at"/>
                         </group>
                         <group string="Access">
                             <field name="enabled"/>
                             <field name="allowed_ips" placeholder="One IP or CIDR per line"/>
+                            <field name="trust_cloudflare"/>
                         </group>
                     </group>
                 </sheet>

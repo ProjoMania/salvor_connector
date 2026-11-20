@@ -40,3 +40,6 @@ def uninstall_hook(env):
                 if state.get("state") in ("starting", "running"):
                     terminate_state(state)
         shutil.rmtree(base, ignore_errors=True)
+    # The module's own system parameters go with it: an override of the Cloudflare ranges left
+    # behind would apply again, unnoticed, the next time the module is installed.
+    env["ir.config_parameter"].sudo().search([("key", "=like", r"salvor\_connector.%")]).unlink()
