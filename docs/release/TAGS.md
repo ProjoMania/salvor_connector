@@ -2,7 +2,7 @@
 
 Signed annotated tags, one per branch and version: `<odoo series>-<module version>`, SSH-signed. Verify
 them with `git verify-tag` and the key in `SECURITY.md`; GitHub shows tags up to 2.0.8 as *Verified*.
-**Created: tags through 2.0.10: 2.0.4 to 2.0.10 on 17.0, 18.0, 19.0 and 20.0; 2.0.10 on 16.0.** Tags for 1.0.0
+**Created: tags through 2.0.12: 2.0.4 to 2.0.12 on 17.0, 18.0, 19.0 and 20.0; 2.0.10 to 2.0.12 on 16.0.** Tags for 1.0.0
 to 2.0.3 below are not created (historical reference only). Create a new one with
 `git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`.
 
@@ -27,9 +27,11 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.8 (`NN.0.2.0.8`) | `b134dc1` → `17.0-2.0.8` | `8d71913` → `18.0-2.0.8` | `b6f45c4` → `19.0-2.0.8` | `d84a2b1` → `20.0-2.0.8` | fixed; docs/store only |
 | 2.0.9 (`NN.0.2.0.9`) | `e722734` → `17.0-2.0.9` | `f52ea72` → `18.0-2.0.9` | `b329f40` → `19.0-2.0.9` | `d3d65d8` → `20.0-2.0.9` | fixed; docs/store/CI only |
 | 2.0.10 (`NN.0.2.0.10`) | `83706b7` → `17.0-2.0.10` | `f43ab7e` → `18.0-2.0.10` | `d7d3de8` → `19.0-2.0.10` | `6809540` → `20.0-2.0.10` | fixed; chunked-body limit fix (GHSA-28rv-398c-r5xx); adds Odoo 16 (`c2793cd` → `16.0-2.0.10` on `16.0`) |
-| 2.0.11 (`NN.0.2.0.11`) | 2.0.11 commit on `17.0` → `17.0-2.0.11` | on `18.0` → `18.0-2.0.11` | on `19.0` → `19.0-2.0.11` | on `20.0` → `20.0-2.0.11` | fixed; chunked + Content-Length, no-database path, 16.0 uninstall (`16.0-2.0.11` on `16.0`) |
+| 2.0.11 (`NN.0.2.0.11`) | `eae9536` → `17.0-2.0.11` | `8b0021e` → `18.0-2.0.11` | `e62697b` → `19.0-2.0.11` | `07c857e` → `20.0-2.0.11` | fixed; chunked + Content-Length, no-database path, 16.0 uninstall (`d738402` → `16.0-2.0.11` on `16.0`) |
+| 2.0.12 (`NN.0.2.0.12`) | `8636f8a` → `17.0-2.0.12` | `f70d57b` → `18.0-2.0.12` | `c2263a0` → `19.0-2.0.12` | `8af7f53` → `20.0-2.0.12` | **superseded: do not use.** Cloudflare header trusted by default; pairing shows a false error (`d62d724` → `16.0-2.0.12` on `16.0`). Use 2.0.13 |
+| 2.0.13 (`NN.0.2.0.13`) | 2.0.13 commit on `17.0` → `17.0-2.0.13` | on `18.0` → `18.0-2.0.13` | on `19.0` → `19.0-2.0.13` | on `20.0` → `20.0-2.0.13` | Cloudflare header only with the *Odoo is behind Cloudflare* switch (off by default); pairing and rotation fixes (`16.0-2.0.13` on `16.0`) |
 
-The 2.0.11 hashes are the branch heads after the 2.0.11 commit (reported with the commit; this file
+The 2.0.13 hashes are the branch heads after the 2.0.13 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:
@@ -37,4 +39,4 @@ Notes:
   `1acb4b0`); `028d230` on 19.0 is the commit a reviewer cited, and matches.
 - Each 2.0.0 head is the parent of the 2.0.1 bump commit (`b2fc8e9`, `e0bd0b1`, `01059f0`, `c8a3118`).
 - Each 2.0.1 head is the parent of the 2.0.2 commit. On 19.0 the 2.0.1 range is `01059f0..6532c48`.
-- Branch `16.0` never had the connector's drill feature and gets no tags.
+- Branch `16.0` never had the connector's drill feature and has no tags below `16.0-2.0.10`.
