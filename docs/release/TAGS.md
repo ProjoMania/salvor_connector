@@ -2,7 +2,7 @@
 
 Signed annotated tags, one per branch and version: `<odoo series>-<module version>`, SSH-signed. Verify
 them with `git verify-tag` and the key in `SECURITY.md`; GitHub shows tags up to 2.0.8 as *Verified*.
-**Created: tags through 2.0.12: 2.0.4 to 2.0.12 on 17.0, 18.0, 19.0 and 20.0; 2.0.10 to 2.0.12 on 16.0.** Tags for 1.0.0
+**Created: tags through 2.0.15: 2.0.4 to 2.0.15 on 17.0, 18.0, 19.0 and 20.0; 2.0.10 to 2.0.13 on 16.0.** Tags for 1.0.0
 to 2.0.3 below are not created (historical reference only). Create a new one with
 `git tag -s <name> <commit> -m "salvor_connector <module version> for Odoo <series>"`.
 
@@ -29,10 +29,11 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.10 (`NN.0.2.0.10`) | `83706b7` → `17.0-2.0.10` | `f43ab7e` → `18.0-2.0.10` | `d7d3de8` → `19.0-2.0.10` | `6809540` → `20.0-2.0.10` | fixed; chunked-body limit fix (GHSA-28rv-398c-r5xx); adds Odoo 16 (`c2793cd` → `16.0-2.0.10` on `16.0`) |
 | 2.0.11 (`NN.0.2.0.11`) | `eae9536` → `17.0-2.0.11` | `8b0021e` → `18.0-2.0.11` | `e62697b` → `19.0-2.0.11` | `07c857e` → `20.0-2.0.11` | fixed; chunked + Content-Length, no-database path, 16.0 uninstall (`d738402` → `16.0-2.0.11` on `16.0`) |
 | 2.0.12 (`NN.0.2.0.12`) | `8636f8a` → `17.0-2.0.12` | `f70d57b` → `18.0-2.0.12` | `c2263a0` → `19.0-2.0.12` | `8af7f53` → `20.0-2.0.12` | **superseded: do not use.** Cloudflare header trusted by default; pairing shows a false error (`d62d724` → `16.0-2.0.12` on `16.0`). Use 2.0.13 |
-| 2.0.13 (`NN.0.2.0.13`) | 2.0.13 commit on `17.0` → `17.0-2.0.13` | on `18.0` → `18.0-2.0.13` | on `19.0` → `19.0-2.0.13` | on `20.0` → `20.0-2.0.13` | Cloudflare header only with the *Odoo is behind Cloudflare* switch (off by default); pairing and rotation fixes (`16.0-2.0.13` on `16.0`) |
-| 2.0.14 (`NN.0.2.0.14`) | 2.0.14 commit on `17.0` → `17.0-2.0.14` | on `18.0` → `18.0-2.0.14` | on `19.0` → `19.0-2.0.14` | on `20.0` → `20.0-2.0.14` | store listing, description page, images and one sentence with a link on the settings form; no change to the module's code (17.0 to 20.0 only; 16.0 stays on 2.0.13) |
+| 2.0.13 (`NN.0.2.0.13`) | `87785b2` → `17.0-2.0.13` | `07b4896` → `18.0-2.0.13` | `7ec05b8` → `19.0-2.0.13` | `266c796` → `20.0-2.0.13` | Cloudflare header only with the *Odoo is behind Cloudflare* switch (off by default); pairing and rotation fixes (`51785e4` → `16.0-2.0.13` on `16.0`) |
+| 2.0.14 (`NN.0.2.0.14`) | `0b6797c` → `17.0-2.0.14` | `8d9ada9` → `18.0-2.0.14` | `dccff11` → `19.0-2.0.14` | `281d9f0` → `20.0-2.0.14` | store listing, description page, images and one sentence with a link on the settings form; no change to the module's code (17.0 to 20.0 only; 16.0 stays on 2.0.13) |
+| 2.0.15 (`NN.0.2.0.15`) | 2.0.15 commit on `17.0` → `17.0-2.0.15` | on `18.0` → `18.0-2.0.15` | on `19.0` → `19.0-2.0.15` | on `20.0` → `20.0-2.0.15` | store listing text only: new summary, "Get started" installs the module before the pairing code; no code change |
 
-The 2.0.13 hashes are the branch heads after the 2.0.13 commit (reported with the commit; this file
+The 2.0.15 hashes are the branch heads after the 2.0.15 commit (reported with the commit; this file
 cannot contain its own commit's hash).
 
 Notes:
