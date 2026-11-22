@@ -30,6 +30,7 @@ the push log (`STATUS.md` deploy rows, GitHub "Activity") before tagging.
 | 2.0.11 (`NN.0.2.0.11`) | `eae9536` → `17.0-2.0.11` | `8b0021e` → `18.0-2.0.11` | `e62697b` → `19.0-2.0.11` | `07c857e` → `20.0-2.0.11` | fixed; chunked + Content-Length, no-database path, 16.0 uninstall (`d738402` → `16.0-2.0.11` on `16.0`) |
 | 2.0.12 (`NN.0.2.0.12`) | `8636f8a` → `17.0-2.0.12` | `f70d57b` → `18.0-2.0.12` | `c2263a0` → `19.0-2.0.12` | `8af7f53` → `20.0-2.0.12` | **superseded: do not use.** Cloudflare header trusted by default; pairing shows a false error (`d62d724` → `16.0-2.0.12` on `16.0`). Use 2.0.13 |
 | 2.0.13 (`NN.0.2.0.13`) | 2.0.13 commit on `17.0` → `17.0-2.0.13` | on `18.0` → `18.0-2.0.13` | on `19.0` → `19.0-2.0.13` | on `20.0` → `20.0-2.0.13` | Cloudflare header only with the *Odoo is behind Cloudflare* switch (off by default); pairing and rotation fixes (`16.0-2.0.13` on `16.0`) |
+| 2.0.14 (`NN.0.2.0.14`) | 2.0.14 commit on `17.0` → `17.0-2.0.14` | on `18.0` → `18.0-2.0.14` | on `19.0` → `19.0-2.0.14` | on `20.0` → `20.0-2.0.14` | store listing, description page, images and one sentence with a link on the settings form; no change to the module's code (17.0 to 20.0 only; 16.0 stays on 2.0.13) |
 
 The 2.0.13 hashes are the branch heads after the 2.0.13 commit (reported with the commit; this file
 cannot contain its own commit's hash).

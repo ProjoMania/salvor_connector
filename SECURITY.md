@@ -36,7 +36,7 @@ affected commits per branch: `docs/release/TAGS.md`. Severity: High (CVSS 3.1 8.
 | Impact | The archive's content reaches `psql`, which runs backslash meta-commands: `\!` runs OS commands as the Odoo service user, `\c` connects to other databases the Odoo role can reach. The archive's SQL also runs with the rights of the role that owns the live database. |
 
 ### What to do
-1. Upgrade to the latest version (2.0.13; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
+1. Upgrade to the latest version (2.0.14; 2.0.13 on `16.0`; 2.0.4 or later fixes the issue) on every database where the module is installed: pull your branch
    (`16.0`, `17.0`, `18.0`, `19.0` or `20.0`), **restart Odoo** (it keeps running the old Python code until it
    is restarted), then upgrade the module (`-u salvor_connector`, or *Upgrade* in Apps).
 2. Until you have upgraded, keep **Allow restore drills** off (Settings → Salvor Connector → Settings
@@ -63,13 +63,13 @@ GitHub advisory: [GHSA-28rv-398c-r5xx](https://github.com/ProjoMania/salvor_conn
 | Impact | Memory and CPU use on the Odoo server from large request bodies (denial of service). No data access. |
 
 ### What to do
-Upgrade to the latest version (2.0.13; 2.0.11 or later has the complete fix): pull your branch, restart
+Upgrade to the latest version (2.0.14; 2.0.13 on `16.0`; 2.0.11 or later has the complete fix): pull your branch, restart
 Odoo, `-u salvor_connector`. Independently of the module, a reverse proxy that limits request bodies
 (nginx `client_max_body_size`) and restricts `/salvor/` to Salvor's IP addresses also contains it.
 
 ## 2.0.12: the IP allowlist trusted `CF-Connecting-IP` by default (changed in 2.0.13)
 
-No advisory number is assigned to this. **Do not use 2.0.12; use 2.0.13.**
+No advisory number is assigned to this. **Do not use 2.0.12; use 2.0.13 or later.**
 
 | | |
 |---|---|
