@@ -8,28 +8,62 @@
 <section class="oe_container">
     <div class="oe_row oe_spaced">
         <div class="oe_span12">
+            <img src="banner_offsite_backup.png" alt="Off-site backups of your Odoo database, pulled by Salvor without the master password"
+                 style="max-width:100%;border-radius:6px;margin-bottom:16px;"/>
+
+            <h4 style="color:#0d9488;">What this free module does</h4>
+            <ul>
+                <li>Gives Salvor one narrow way to take a backup of <b>this one database</b>, and nothing else.</li>
+                <li>Works with <code>list_db = False</code>. Never asks for, stores or sends the master password.</li>
+                <li>Refuses every request until it is paired, then checks the access token and the caller's address
+                    on every call.</li>
+                <li>Lists Salvor's calls, and refusals, in a Pull Log inside Odoo.</li>
+                <li>On its own it takes no backup and sends no data. It needs a Salvor account.</li>
+            </ul>
+
+            <h4 style="color:#0d9488;">What your Salvor account adds</h4>
+            <ul>
+                <li>Salvor is a paid service, from $190 a year (Solo plan, billed yearly), with a 14-day free trial
+                    and no card.</li>
+                <li>Backups on your schedule, pulled from outside and stored off your server, in the EU (Amsterdam /
+                    Backblaze EU Central).</li>
+                <li>Every archive checked when it arrives: error pages and JSON answers are refused, every file in
+                    the zip is CRC-checked, the manifest is read, and a SHA-256 is recorded. A backup that fails the
+                    check is rejected, not stored.</li>
+                <li>A warning when a backup is much bigger or smaller than the one before.</li>
+                <li>An alert when backups stop arriving, by e-mail on every plan (Telegram on Partner and up).</li>
+                <li>Retention rules: keep N days, the last N copies, or both.</li>
+                <li>Every archive downloadable, in Odoo's own formats: the standard backup zip (<code>dump.sql</code>,
+                    <code>filestore/</code>, <code>manifest.json</code>) or a PostgreSQL custom-format dump. Both
+                    restore with Odoo's own tools.</li>
+            </ul>
+
+            <h4 style="color:#0d9488;">Restore drills</h4>
             <p>
-                Always use the latest version. If you are upgrading from 1.0.0, 2.0.0 or 2.0.1, pair the module
-                again after upgrading. Details:
-                <a href="https://github.com/ProjoMania/salvor_connector/blob/20.0/SECURITY.md">SECURITY.md</a>
-                (github.com/ProjoMania/salvor_connector).
+                This module takes backups. Restore drills run on your own server and need a master-password or SSH
+                connection to Salvor (SSH is on the Fleet plan).
             </p>
 
-            <img src="screenshot_2_settings_connected.png" alt="Salvor Connector settings, connected to Salvor"
-                 style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;"/>
+            <h4 style="color:#0d9488;">Get started</h4>
+            <ol>
+                <li>Create a Salvor account at salvorcloud.com (14-day free trial, no card).</li>
+                <li>In Salvor choose <i>Add database &rarr; Connector</i>. Salvor shows a pairing code
+                    (<code>SLV-XXXX-XXXX</code>), valid for 10 minutes, usable once.</li>
+                <li>Install this module in the database you want backed up. In Odoo open
+                    <i>Settings &rarr; Salvor Connector &rarr; Settings</i>, paste the code and click <b>Connect</b>.
+                    Developer mode is not needed.</li>
+                <li>Salvor tests the connection, and the result shows on that form.</li>
+            </ol>
+            <p>Behind Cloudflare or your own proxy: see <i>Works on hardened servers</i> below.</p>
 
-            <h4 style="color:#0d9488;">What it is</h4>
+            <h4 style="color:#0d9488;">Screenshots</h4>
             <p>
-                Salvor (<a href="https://salvorcloud.com">salvorcloud.com</a>) keeps a second, independent copy of
-                your Odoo databases off your host and alerts you from outside when backups stop. This small, free
-                module lets Salvor take that copy of <b>this one database</b>. It does not need your master
-                password, and it does not need the database manager to be switched on.
-            </p>
-            <p>
-                The module is useful only with a Salvor account. On its own it does nothing: it takes no backup by
-                itself, sends no data, and refuses every request until it is paired. <b>It does not perform restore
-                drills; it takes backups.</b> Salvor checks each archive's integrity (sha256); restore drills need a
-                master-password or SSH connection.
+                <img src="screenshot_2_settings_connected.png" alt="Connected: Salvor can now take backups of this database, and only from its allowed address" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
+                <img src="screenshot_5_salvor_backups.png" alt="In Salvor: each backup with its time, size and check result" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
+                <img src="screenshot_6_stale_alert.png" alt="When backups stop arriving, Salvor tells you" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
+                <img src="screenshot_1_settings_unpaired.png" alt="Before pairing: paste the code from Salvor and click Connect" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
+                <img src="screenshot_3_pull_log.png" alt="Pull Log: the calls Salvor made to this database, and the refusals" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
+                <img src="screenshot_4_settings_menu.png" alt="Find it under Settings &gt; Salvor Connector" style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
             </p>
 
             <h4 style="color:#0d9488;">The problem it solves</h4>
@@ -58,16 +92,6 @@
                     to delete the file.</li>
             </ol>
             <p>Your server never opens a connection to Salvor for a backup. Salvor asks; the module answers or refuses.</p>
-
-            <h4 style="color:#0d9488;">Screenshots</h4>
-            <p>
-                <img src="screenshot_1_settings_unpaired.png" alt="Settings before pairing: Salvor URL and pairing code"
-                     style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
-                <img src="screenshot_3_pull_log.png" alt="Pull Log: every call Salvor made and every refusal"
-                     style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
-                <img src="screenshot_4_settings_menu.png" alt="Settings menu with the Salvor Connector entry"
-                     style="max-width:100%;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:12px;"/>
-            </p>
 
             <h4 style="color:#0d9488;">What the token can do</h4>
             <p>With a valid token, from an allowed IP address, while the Connector is enabled:</p>
@@ -166,11 +190,11 @@
 
             <h4 style="color:#0d9488;">Requirements</h4>
             <ul>
-                <li>Self-hosted Odoo 16, 17, 18, 19 or 20 <b>on Linux</b> (Community or Enterprise). Not Odoo Online;
+                <li>Self-hosted Odoo 17, 18, 19 or 20 <b>on Linux</b> (Community or Enterprise). Not Odoo Online;
                     Odoo.sh is not a supported target.</li>
                 <li><code>pg_dump</code> on the Odoo server, same or newer major version than PostgreSQL.</li>
                 <li>Odoo reachable over HTTPS from Salvor, with <code>web.base.url</code> set to its public
-                    <code>https://</code> address. On Odoo 16, 17 and 18 the URL must lead to exactly one database.</li>
+                    <code>https://</code> address. On Odoo 17 and 18 the URL must lead to exactly one database.</li>
                 <li>Behind Cloudflare: switch on <b>Odoo is behind Cloudflare</b> in the module's settings (off by
                     default), or restore visitor addresses at your own proxy. With the switch on, the address check
                     trusts Cloudflare's <code>CF-Connecting-IP</code> header; the access token is required either way.
@@ -182,6 +206,13 @@
                 <li>Free disk in the Odoo data directory: database size (+ filestore for the zip format) + 256 MiB.</li>
                 <li>Each download piece is a normal Odoo request bound by <code>limit_time_real</code>; on a link slower
                     than about 2 MiB/s, raise it.</li>
+                            <li><b>Upgrading:</b> always run the latest version. To upgrade, install the new version (from this
+                    page or from your branch on GitHub), restart Odoo, then upgrade the module (<i>Apps &gt; Upgrade</i>,
+                    or <code>-u salvor_connector</code>). If you are upgrading from 1.0.0, 2.0.0 or 2.0.1, also pair
+                    again afterwards: take a new pairing code in Salvor and click <b>Connect</b> on the module's settings
+                    form. Salvor does not work with versions below 2.0.2. Details:
+                    <a href="https://github.com/ProjoMania/salvor_connector/blob/20.0/SECURITY.md">SECURITY.md</a>
+                    (github.com/ProjoMania/salvor_connector).</li>
             </ul>
 
             <p>
