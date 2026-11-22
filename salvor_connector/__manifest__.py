@@ -1,7 +1,7 @@
 {
     "name": "Salvor Connector: Off-site Database Backup without the Master Password",
-    "summary": "Automatic backup of this database, off-site and with verification, through a Salvor account (free trial). No master password; works with list_db = False.",
-    "version": "17.0.2.0.14",
+    "summary": "Automatic backup of this Odoo database: an off-site backup with verification, through a Salvor account (free trial). No master password; works with list_db = False.",
+    "version": "17.0.2.0.15",
     "category": "Administration/Tools",
     "author": "ProjoMania",
     "website": "https://salvorcloud.com/?utm_source=odoo-apps&utm_medium=marketplace&utm_campaign=connector-listing",
