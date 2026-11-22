@@ -64,6 +64,9 @@
                     </div>
                     <div class="alert alert-warning" role="status" invisible="is_paired">
                         Not connected. In Salvor choose "Add database" then "Connector", paste the pairing code here and click Connect.
+                        No Salvor account yet?
+                        <a href="https://salvorcloud.com/?utm_source=odoo-module&amp;utm_medium=product&amp;utm_campaign=connector-settings" target="_blank" rel="noopener noreferrer">Create one</a>
+                        (14-day free trial, no card), then come back here with the pairing code.
                     </div>
                     <group>
                         <group string="Pairing">
